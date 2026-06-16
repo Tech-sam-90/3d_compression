@@ -1,0 +1,35 @@
+experiment_name: aadp_ablation_task_cond_stage1
+projector: aadp_task_cond_stage1
+num_latents: 32
+num_tokens: 64
+use_film: true
+
+device: cuda
+mixed_precision: true
+num_epochs: 10
+batch_size: 2
+gradient_accumulation_steps: 8
+max_grad_norm: 1.0
+learning_rate: 1.0e-4
+warmup_steps: 500
+val_every_n_steps: 250
+save_every_n_steps: 500
+checkpoint_dir: checkpoints/
+use_wandb: true
+use_attn_loss: false
+patience: 5
+
+vit_model_name: vit_base_patch16_224
+vit_frozen: true
+vit_resize_to: 224
+llm_model_name: facebook/opt-1.3b
+llm_frozen: true
+embed_dim: 768
+cond_dim: 2048
+max_depth: 512
+instruction_encoder_model: facebook/opt-1.3b
+
+hf_token: null
+shuffle: true
+shuffle_buffer_size: 1000
+max_samples: null
