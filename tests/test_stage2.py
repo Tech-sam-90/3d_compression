@@ -181,24 +181,15 @@ def test_null_film_same_output_for_different_etext() -> None:
     assert torch.equal(out_a, out_b), "NullFiLM should produce identical outputs regardless of etext"
 
 
-# ── Depth spacing ─────────────────────────────────────────────────────────────
+# ── Forward ───────────────────────────────────────────────────────────────────
 
 
-def test_depth_spacing_none_runs() -> None:
+def test_forward_runs() -> None:
     _skip_if_no_cuda()
     model = _make_agg()
     latents = torch.randn(2, 64, 32, 768, device=DEVICE)
     etext = torch.randn(2, 768, device=DEVICE)
-    out = model(latents, etext, depth_spacing_mm=None)
-    assert out.shape == (2, 64, 768)
-
-
-def test_depth_spacing_float_runs() -> None:
-    _skip_if_no_cuda()
-    model = _make_agg()
-    latents = torch.randn(2, 64, 32, 768, device=DEVICE)
-    etext = torch.randn(2, 768, device=DEVICE)
-    out = model(latents, etext, depth_spacing_mm=3.0)
+    out = model(latents, etext)
     assert out.shape == (2, 64, 768)
 
 

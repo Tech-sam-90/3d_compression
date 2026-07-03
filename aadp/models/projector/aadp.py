@@ -15,7 +15,7 @@ from aadp.models.projector.stage2 import InterSliceAggregator
 
 
 class AADPProjector(nn.Module):
-    """Two-stage Anatomy-Aware Dynamic Projector.
+    """A-ADP: two-stage adaptive projector (final name TBD).
 
     Stage 1 (``IntraSliceDistiller``) compresses each CT slice's N patch
     tokens down to K latents independently using Perceiver cross-attention.
@@ -117,16 +117,14 @@ class AADPProjector(nn.Module):
         etext: torch.Tensor,
         H_patches: int,
         W_patches: int,
-        depth_spacing_mm: Optional[float] = None,
     ) -> torch.Tensor:
         """Run the full two-stage A-ADP pipeline.
 
         Args:
-            patch_tokens:     ``(B, D, N, C)`` ViT patch tokens for all slices.
-            etext:            ``(B, cond_dim)`` instruction embedding.
-            H_patches:        Patch grid height, passed to Stage 1's pos enc.
-            W_patches:        Patch grid width, passed to Stage 1's pos enc.
-            depth_spacing_mm: Physical slice spacing in mm; passed to Stage 2.
+            patch_tokens: ``(B, D, N, C)`` ViT patch tokens for all slices.
+            etext:        ``(B, cond_dim)`` instruction embedding.
+            H_patches:    Patch grid height, passed to Stage 1's pos enc.
+            W_patches:    Patch grid width, passed to Stage 1's pos enc.
 
         Returns:
             ``(B, M, C)`` tokens ready for the LLM.
@@ -143,7 +141,7 @@ class AADPProjector(nn.Module):
         # Step 2 — Stage 2: aggregate across slices with instruction conditioning
         K = x.shape[1]
         x = x.reshape(B, D, K, C)
-        out = self.stage2(x, etext, depth_spacing_mm)  # (B, M, C)
+        out = self.stage2(x, etext)  # (B, M, C)
 
         return out
 

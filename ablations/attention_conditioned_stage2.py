@@ -101,14 +101,12 @@ class AttentionConditionedStage2(nn.Module):
         self,
         slice_latents: torch.Tensor,
         etext: torch.Tensor,
-        depth_spacing_mm: Optional[float] = None,
     ) -> torch.Tensor:
         """Aggregate slice latents into M tokens via attention-conditioned queries.
 
         Args:
-            slice_latents:    ``(B, D, K, C)`` Stage 1 outputs.
-            etext:            ``(B, cond_dim)`` instruction embedding.
-            depth_spacing_mm: Physical slice spacing in mm; passed to depth enc.
+            slice_latents: ``(B, D, K, C)`` Stage 1 outputs.
+            etext:         ``(B, cond_dim)`` instruction embedding.
 
         Returns:
             ``(B, M, C)`` aggregated tokens.
@@ -116,10 +114,7 @@ class AttentionConditionedStage2(nn.Module):
         B, D, K, C = slice_latents.shape
 
         # Step 1: depth positional encoding → add to slice latents
-        if depth_spacing_mm is not None:
-            depth_pe = self.depth_pos_enc.with_spacing(D, depth_spacing_mm)
-        else:
-            depth_pe = self.depth_pos_enc(D)
+        depth_pe = self.depth_pos_enc(D)
         slice_latents = slice_latents + depth_pe.unsqueeze(0).unsqueeze(2)
 
         # Step 2: flatten D×K into a single sequence
@@ -239,7 +234,6 @@ class AttentionConditionedAADP(nn.Module):
         etext: torch.Tensor,
         H_patches: int,
         W_patches: int,
-        depth_spacing_mm: Optional[float] = None,
     ) -> torch.Tensor:
         """Run the two-stage pipeline with attention-conditioned Stage 2.
 
@@ -248,7 +242,6 @@ class AttentionConditionedAADP(nn.Module):
             etext:        ``(B, cond_dim)`` instruction embedding.
             H_patches:    Patch grid height.
             W_patches:    Patch grid width.
-            depth_spacing_mm: Physical slice spacing in mm.
 
         Returns:
             ``(B, M, C)`` tokens.
@@ -261,7 +254,7 @@ class AttentionConditionedAADP(nn.Module):
 
         K = x.shape[1]
         x = x.reshape(B, D, K, C)
-        return self.stage2(x, etext, depth_spacing_mm)  # (B, M, C)
+        return self.stage2(x, etext)  # (B, M, C)
 
     # ── Additional methods ─────────────────────────────────────────────────────
 

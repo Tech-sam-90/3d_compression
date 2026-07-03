@@ -188,19 +188,3 @@ def test_depth_enc_gradients_flow() -> None:
     out = enc(128)
     out.sum().backward()
     assert enc.embedding.weight.grad is not None
-
-
-# ── LearnableDepthEnc1D — with_spacing ───────────────────────────────────────
-
-
-def test_with_spacing_same_shape_as_forward(depth_enc: LearnableDepthEnc1D) -> None:
-    _skip_if_no_cuda()
-    fwd = depth_enc(128)
-    ws = depth_enc.with_spacing(128, spacing_mm=1.5)
-    assert ws.shape == fwd.shape
-
-
-def test_with_spacing_output_on_cuda(depth_enc: LearnableDepthEnc1D) -> None:
-    _skip_if_no_cuda()
-    out = depth_enc.with_spacing(64, spacing_mm=2.0)
-    assert out.device.type == "cuda"

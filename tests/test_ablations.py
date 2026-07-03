@@ -132,15 +132,6 @@ def test_stage2_slice_attention_error_before_forward() -> None:
         m.get_slice_attention(8, 4)
 
 
-# ── Depth spacing passthrough ─────────────────────────────────────────────────
-
-
-def test_stage2_depth_spacing_mm_accepted(stage2: AttentionConditionedStage2) -> None:
-    _skip_if_no_cuda()
-    out = stage2(_slice_latents(2, 16, 8, 768), _etext(2), depth_spacing_mm=2.5)
-    assert out.shape == (2, 64, 768)
-
-
 # ── etext actually changes the output (not ignored like baselines) ────────────
 
 
@@ -289,14 +280,6 @@ def test_ac_aadp_slice_attention_error_before_forward() -> None:
         m.get_slice_attention()
 
 
-# ── Depth spacing ─────────────────────────────────────────────────────────────
-
-
-def test_ac_aadp_depth_spacing_accepted(ac_aadp: AttentionConditionedAADP) -> None:
-    _skip_if_no_cuda()
-    out = ac_aadp(_patch(2, 16, 196, 768), _etext(2), 14, 14, depth_spacing_mm=3.0)
-    assert out.shape == (2, 64, 768)
-
 
 # ── use_film kwarg silently ignored ──────────────────────────────────────────
 
@@ -374,7 +357,7 @@ def test_ac_aadp_drop_in_contract() -> None:
             embed_dim=C, num_latents=16, num_tokens=M, cond_dim=768, device=DEVICE
         )
         with torch.no_grad():
-            out = m(patch_tokens, etext, 14, 14, depth_spacing_mm=2.5)
+            out = m(patch_tokens, etext, 14, 14)
         assert out.shape == (B, M, C), f"{name}: expected ({B}, {M}, {C}), got {out.shape}"
 
 

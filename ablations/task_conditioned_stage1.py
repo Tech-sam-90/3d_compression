@@ -221,16 +221,14 @@ class TaskConditionedAADP(nn.Module):
         etext: torch.Tensor,
         H_patches: int,
         W_patches: int,
-        depth_spacing_mm: Optional[float] = None,
     ) -> torch.Tensor:
         """Run Task-Conditioned A-ADP pipeline.
 
         Args:
-            patch_tokens:     ``(B, D, N, C)`` ViT patch tokens.
-            etext:            ``(B, cond_dim)`` instruction embedding.
-            H_patches:        Patch grid height.
-            W_patches:        Patch grid width.
-            depth_spacing_mm: Physical slice spacing in mm.
+            patch_tokens: ``(B, D, N, C)`` ViT patch tokens.
+            etext:        ``(B, cond_dim)`` instruction embedding.
+            H_patches:    Patch grid height.
+            W_patches:    Patch grid width.
 
         Returns:
             ``(B, M, C)`` tokens for the LLM.
@@ -243,7 +241,7 @@ class TaskConditionedAADP(nn.Module):
 
         K = x.shape[1]
         x = x.reshape(B, D, K, C)
-        return self.stage2(x, etext, depth_spacing_mm)          # (B, M, C)
+        return self.stage2(x, etext)          # (B, M, C)
 
     def get_slice_attention(self) -> torch.Tensor:
         """Per-slice attention mass ``(B, D)`` from the last forward pass."""

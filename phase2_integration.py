@@ -44,7 +44,7 @@ model = MedVLM(
 # ── 3. Inference forward pass ─────────────────────────────────────────────────
 with torch.no_grad():
     output = model(volumes, instructions, report_tokens=None,
-                   depth_spacing_mm=3.0, max_new_tokens=8)
+                   max_new_tokens=8)
 print(f"Generated token ids shape: {output.shape}")
 assert output.ndim == 2, "Inference output should be (B, generated_length)"
 print("Inference forward pass: OK")

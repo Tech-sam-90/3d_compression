@@ -210,17 +210,6 @@ def test_gradients_flow_through_etext_with_film() -> None:
     assert etext.grad is not None
 
 
-# ── depth_spacing_mm ──────────────────────────────────────────────────────────
-
-
-def test_depth_spacing_mm_runs(proj_base: AADPProjector) -> None:
-    _skip_if_no_cuda()
-    patch_tokens = torch.randn(2, 64, 196, 768, device=DEVICE)
-    etext = torch.randn(2, 768, device=DEVICE)
-    out = proj_base(patch_tokens, etext, 14, 14, depth_spacing_mm=3.0)
-    assert out.shape == (2, 64, 768)
-
-
 # ── Device, dtype, finite ─────────────────────────────────────────────────────
 
 

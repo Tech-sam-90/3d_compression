@@ -40,7 +40,13 @@ class MedVLM(nn.Module):
                                    memory is the binding constraint.
         llm_model_name:            HuggingFace model ID for the LLM backbone.
         llm_frozen:                Freeze LLM weights. Default True (only the
-                                   projector trains by default).
+                                   projector trains by default).  Ignored when
+                                   ``llm_lora["enabled"]`` is True.
+        llm_lora:                  Optional dict enabling LoRA fine-tuning of the
+                                   LLM. Keys: ``enabled`` (bool), ``r``,
+                                   ``alpha``, ``target_modules`` (list of str),
+                                   ``dropout``.  When enabled the base LLM is
+                                   frozen and only LoRA adapters train.
         embed_dim:                 Hint for the token dimension.  Actual dims
                                    are derived from the ViT and LLM configs
                                    automatically; a ``visual_proj`` bridge is
@@ -64,6 +70,7 @@ class MedVLM(nn.Module):
         vit_resize_to: Optional[int] = None,
         llm_model_name: str = "facebook/opt-125m",
         llm_frozen: bool = True,
+        llm_lora: Optional[Dict[str, Any]] = None,
         embed_dim: int = 768,
         num_latents: int = 32,
         num_tokens: int = 64,
@@ -118,9 +125,28 @@ class MedVLM(nn.Module):
         self.llm = AutoModelForCausalLM.from_pretrained(
             llm_model_name, dtype=torch.float32
         )
-        if llm_frozen:
-            self.llm.requires_grad_(False)
+        # Capture the hidden size before any PEFT wrapping — a PeftModel proxies
+        # attribute access, so read it off the bare base model while it is direct.
         C_llm = self.llm.config.hidden_size
+
+        # LoRA takes precedence over full freezing.  When enabled, PEFT freezes
+        # the base LLM weights and marks only the injected adapter weights
+        # trainable; the base model is never fully unfrozen either way.
+        if llm_lora is not None and llm_lora.get("enabled", False):
+            from peft import LoraConfig, TaskType, get_peft_model
+
+            peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=llm_lora.get("r", 16),
+                lora_alpha=llm_lora.get("alpha", 32),
+                target_modules=llm_lora.get("target_modules", ["q_proj", "v_proj"]),
+                lora_dropout=llm_lora.get("dropout", 0.05),
+                bias="none",
+            )
+            self.llm = get_peft_model(self.llm, peft_config)
+            self.llm.print_trainable_parameters()
+        elif llm_frozen:
+            self.llm.requires_grad_(False)
 
         # LLM tokenizer — used to embed instruction tokens in forward()
         self._llm_tokenizer = AutoTokenizer.from_pretrained(llm_model_name)
@@ -145,7 +171,6 @@ class MedVLM(nn.Module):
         volumes: torch.Tensor,
         instructions: List[str],
         report_tokens: Optional[torch.Tensor] = None,
-        depth_spacing_mm: Optional[float] = None,
         max_new_tokens: int = 256,
     ) -> Any:
         """Run the full MedVLM pipeline.
@@ -158,8 +183,6 @@ class MedVLM(nn.Module):
             report_tokens:    ``(B, L_rep)`` tokenized report for
                               teacher-forcing during training. ``None`` at
                               inference.
-            depth_spacing_mm: Physical slice spacing in mm; passed to Stage 2's
-                              depth positional encoding.
             max_new_tokens:   Token budget for inference generation.
 
         Returns:
@@ -193,7 +216,7 @@ class MedVLM(nn.Module):
 
         # ── Step 3: A-ADP projector ──────────────────────────────────────────
         visual_tokens = self.projector(
-            patch_tokens, etext, H_patches, W_patches, depth_spacing_mm
+            patch_tokens, etext, H_patches, W_patches
         )                                                # (B, M, C_vit)
 
         # ── Step 4: bridge to LLM space ──────────────────────────────────────
@@ -297,7 +320,6 @@ def variable_depth_collate_fn(batch: List[Dict]) -> Dict:
         "volumes"          — ``(D, H, W)`` float tensor
         "instructions"     — str
         "report_tokens"    — ``(L,)`` long tensor or None
-        "depth_spacing_mm" — float or None
         "label_dict"       — dict (abnormality labels) or None
         "patient_id"       — str or None
 
@@ -345,7 +367,6 @@ def variable_depth_collate_fn(batch: List[Dict]) -> Dict:
         "volumes": torch.stack(padded_vols, dim=0),
         "instructions": [item.get("instructions", "") for item in batch],
         "report_tokens": report_tokens_stacked,
-        "depth_spacing_mm": batch[0].get("depth_spacing_mm"),
         "label_dicts": [item.get("label_dict") for item in batch],
         "patient_ids": [item.get("patient_id") for item in batch],
     }

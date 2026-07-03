@@ -144,10 +144,15 @@ def _nifti_stream_to_array(fs: HfFileSystem, hf_path: str) -> np.ndarray:
 
 
 def _parse_patient_id(volume_name: str) -> str:
-    """Extract patient ID from 'split_patientID_scanID_reconID.nii.gz'."""
-    stem = volume_name.replace(".nii.gz", "").replace(".nii", "")
-    parts = stem.split("_")
-    return parts[1] if len(parts) >= 2 else stem
+    """Return the CT-RATE volume identifier (filename stem without extension).
+
+    This is the full stem, e.g. ``"train_1_a_1"`` for ``train_1_a_1.nii.gz`` —
+    the identifier RadGenome-Chest CT and TotalSegmentator annotations are keyed
+    on.  Using the full stem (rather than just the numeric patient number) is
+    what lets the multi-task sampler and the VTCB evaluators join grounding /
+    mask annotations back to the correct volume.
+    """
+    return volume_name.replace(".nii.gz", "").replace(".nii", "")
 
 
 # ── Bulk pre-download utility ─────────────────────────────────────────────────

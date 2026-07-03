@@ -85,14 +85,13 @@ class PerceiverProjector(nn.Module):
         etext: torch.Tensor,
         H_patches: int = 0,
         W_patches: int = 0,
-        depth_spacing_mm: Optional[float] = None,
     ) -> torch.Tensor:
         """Compress ``(B, D, N, C)`` patch tokens to ``(B, M, C)``.
 
-        ``etext``, ``H_patches``, ``W_patches``, and ``depth_spacing_mm``
-        are accepted for interface compatibility but are **ignored**.
+        ``etext``, ``H_patches``, and ``W_patches`` are accepted for interface
+        compatibility but are **ignored**.
         """
-        _ = etext, H_patches, W_patches, depth_spacing_mm  # task-blind, geometry-blind
+        _ = etext, H_patches, W_patches  # task-blind, geometry-blind
 
         B, D, N, C = patch_tokens.shape
 

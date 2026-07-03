@@ -297,8 +297,7 @@ def test_drop_in_interface_contract() -> None:
     ]:
         proj = cls(embed_dim=C, **extra, device=DEVICE)
         with torch.no_grad():
-            out = proj(patch_tokens, etext, H_patches=32, W_patches=32,
-                       depth_spacing_mm=3.0)
+            out = proj(patch_tokens, etext, H_patches=32, W_patches=32)
         assert out.shape == (B, M, C), (
             f"{name}: expected ({B}, {M}, {C}), got {out.shape}"
         )

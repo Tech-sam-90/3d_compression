@@ -1,6 +1,7 @@
 """Trainer — gradient-accumulation training loop for MedVLM."""
 
 import logging
+import random
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -9,12 +10,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from aadp.data.instruction_builder import build_instructions
 from aadp.models.vlm import MedVLM, variable_depth_collate_fn
 from aadp.training.losses import CombinedLoss, NextTokenLoss
 
 log = logging.getLogger(__name__)
-
-_DEFAULT_INSTRUCTION = "Generate a radiology report for this CT scan."
 
 
 class Trainer:
@@ -72,32 +72,61 @@ class Trainer:
     # ── DataLoader ────────────────────────────────────────────────────────────
 
     def _make_collate_fn(self):
-        """Convert (vol, report, labels, pid) tuples into MedVLM-ready dicts."""
+        """Convert dataset samples into MedVLM-ready dicts.
+
+        Accepts two sample formats:
+          * ``MultiTaskCTRATEDataset`` dicts with ``volume``/``instruction``/
+            ``target`` keys (per-sample instruction already chosen), and
+          * raw ``CTRATEDataset`` ``(vol, report, labels, pid)`` tuples, which
+            are converted on the fly by sampling one of the four instruction
+            types via :func:`build_instructions`.
+
+        Either way each sample contributes one ``(instruction, target)`` pair,
+        so a batch contains a mix of instruction types.
+        """
         tokenizer = self.model._llm_tokenizer
         max_len = self.config.get("max_report_length", 256)
 
         def _collate(batch):
             items = []
-            for vol, report_text, label_dict, patient_id in batch:
+            gt_slice_indices: List[Optional[List[int]]] = []
+            for sample in batch:
+                if isinstance(sample, dict):
+                    vol = sample["volume"]
+                    instruction = sample["instruction"]
+                    target_text = sample["target"]
+                    patient_id = sample.get("patient_id")
+                    gt_slice_indices.append(sample.get("gt_slice_indices"))
+                else:
+                    vol, report_text, label_dict, patient_id = sample
+                    instruction, target_text = random.choice(
+                        build_instructions(report_text, label_dict or {})
+                    )
+                    gt_slice_indices.append(None)
+
                 enc = tokenizer(
-                    report_text,
+                    target_text,
                     return_tensors="pt",
                     truncation=True,
                     max_length=max_len,
                     padding=False,
                 )
-                report_ids = enc["input_ids"][0]  # (L,)
+                target_ids = enc["input_ids"][0]  # (L,)
                 items.append(
                     {
                         "volumes": vol,
-                        "instructions": _DEFAULT_INSTRUCTION,
-                        "report_tokens": report_ids,
-                        "depth_spacing_mm": None,
-                        "label_dict": label_dict,
+                        "instructions": instruction,
+                        "report_tokens": target_ids,
+                        "label_dict": None,
                         "patient_id": patient_id,
                     }
                 )
-            return variable_depth_collate_fn(items)
+            collated = variable_depth_collate_fn(items)
+            # Pass GT slice indices through as a per-sample list (one entry per
+            # batch item, ``None`` where RadGenome grounding is unavailable).
+            # Consumed by the auxiliary attention-alignment loss (A4).
+            collated["gt_slice_indices"] = gt_slice_indices
+            return collated
 
         return _collate
 
@@ -153,17 +182,20 @@ class Trainer:
                 report_tokens = batch.get("report_tokens")
                 if report_tokens is not None:
                     report_tokens = report_tokens.to(self.device)
-                depth_spacing_mm = batch.get("depth_spacing_mm")
 
                 # ── Forward ──────────────────────────────────────────────────
                 with torch.amp.autocast("cuda", enabled=mixed_precision):
-                    output = self.model(
-                        volumes, instructions, report_tokens, depth_spacing_mm
-                    )
+                    output = self.model(volumes, instructions, report_tokens)
                     lm_loss = output.loss
 
-                    # Optional attention alignment auxiliary loss
+                    # Optional attention alignment auxiliary loss (A4).  Fires
+                    # only when enabled and at least one sample in the batch
+                    # carries RadGenome GT slice indices; otherwise the combined
+                    # loss returns lm_loss unchanged.
                     if use_attn_loss:
+                        gt_slice_indices = self._prepare_gt_slice_indices(
+                            batch.get("gt_slice_indices")
+                        )
                         try:
                             attn = self.model.projector.get_slice_attention()
                         except (AttributeError, RuntimeError):
@@ -171,8 +203,8 @@ class Trainer:
                         lm_loss = self._combined_loss(
                             lm_loss,
                             attn_weights=attn,
-                            gt_slice_indices=None,  # no GT at CT-RATE stage
-                            use_attn_loss=False,    # skip without GT indices
+                            gt_slice_indices=gt_slice_indices,
+                            use_attn_loss=gt_slice_indices is not None,
                         )
 
                     loss = lm_loss / grad_accum
@@ -238,6 +270,23 @@ class Trainer:
 
         return history
 
+    # ── Auxiliary-loss helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _prepare_gt_slice_indices(
+        raw: Optional[List[Optional[List[int]]]],
+    ) -> Optional[List[List[int]]]:
+        """Normalise per-sample GT slice indices for the attention loss.
+
+        ``AttentionAlignmentLoss`` expects a length-B list of index lists, with
+        an empty list for samples that have no grounding (those are skipped
+        internally).  Returns ``None`` when the whole batch lacks grounding, so
+        the caller can disable the auxiliary loss entirely for that step.
+        """
+        if not raw or all(idx is None for idx in raw):
+            return None
+        return [list(idx) if idx else [] for idx in raw]
+
     # ── Validation ────────────────────────────────────────────────────────────
 
     def validate(self) -> Dict[str, float]:
@@ -255,11 +304,8 @@ class Trainer:
                 report_tokens = batch.get("report_tokens")
                 if report_tokens is not None:
                     report_tokens = report_tokens.to(self.device)
-                depth_spacing_mm = batch.get("depth_spacing_mm")
 
-                output = self.model(
-                    volumes, instructions, report_tokens, depth_spacing_mm
-                )
+                output = self.model(volumes, instructions, report_tokens)
                 total_loss += output.loss.item()
                 count += 1
 
@@ -296,6 +342,15 @@ class Trainer:
         if not isinstance(self.model.visual_proj, nn.Identity):
             ckpt["visual_proj"] = self.model.visual_proj.state_dict()
 
+        # Save LoRA adapter weights only (base LLM weights are unchanged and
+        # reloaded from the pretrained checkpoint), keeping the file small.
+        if hasattr(self.model.llm, "peft_config"):
+            ckpt["llm_lora"] = {
+                k: v
+                for k, v in self.model.llm.state_dict().items()
+                if "lora_" in k
+            }
+
         if filename is None:
             filename = f"checkpoint_step_{self.global_step}.pt"
         path = ckpt_dir / filename
@@ -320,6 +375,11 @@ class Trainer:
             self.model.visual_proj, nn.Identity
         ):
             self.model.visual_proj.load_state_dict(ckpt["visual_proj"])
+
+        # Restore LoRA adapters (partial state dict → strict=False leaves the
+        # frozen base LLM weights untouched).
+        if "llm_lora" in ckpt and hasattr(self.model.llm, "peft_config"):
+            self.model.llm.load_state_dict(ckpt["llm_lora"], strict=False)
 
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.scheduler.load_state_dict(ckpt["scheduler"])

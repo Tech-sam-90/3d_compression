@@ -95,17 +95,13 @@ class InterSliceAggregator(nn.Module):
         self,
         slice_latents: torch.Tensor,
         etext: torch.Tensor,
-        depth_spacing_mm: Optional[float] = None,
     ) -> torch.Tensor:
         """Aggregate slice latents into M output tokens.
 
         Args:
-            slice_latents:    ``(B, D, K, C)`` — Stage 1 outputs reshaped from
-                              ``(B*D, K, C)``.
-            etext:            ``(B, cond_dim)`` — instruction embedding.
-            depth_spacing_mm: Physical slice spacing in mm. If provided, passed
-                              to ``depth_pos_enc.with_spacing()``; otherwise
-                              ``depth_pos_enc.forward(D)`` is used.
+            slice_latents: ``(B, D, K, C)`` — Stage 1 outputs reshaped from
+                           ``(B*D, K, C)``.
+            etext:         ``(B, cond_dim)`` — instruction embedding.
 
         Returns:
             ``(B, M, C)`` — M aggregated tokens ready for the LLM.
@@ -113,10 +109,7 @@ class InterSliceAggregator(nn.Module):
         B, D, K, C = slice_latents.shape
 
         # Step 1-2: depth positional encoding (D, C)
-        if depth_spacing_mm is not None:
-            depth_pe = self.depth_pos_enc.with_spacing(D, depth_spacing_mm)
-        else:
-            depth_pe = self.depth_pos_enc(D)
+        depth_pe = self.depth_pos_enc(D)
 
         # Step 3: broadcast (D, C) over B and K → add same depth emb to every
         # one of the K latents in each slice

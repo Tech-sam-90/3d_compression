@@ -130,16 +130,3 @@ class LearnableDepthEnc1D(nn.Module):
             weight_t, size=D, mode="linear", align_corners=False
         )                                        # (1, embed_dim, D)
         return interpolated.squeeze(0).T         # (D, embed_dim)
-
-    def with_spacing(self, D: int, spacing_mm: float) -> torch.Tensor:
-        """Depth embeddings with optional spacing-based modulation (forward-compat).
-
-        Args:
-            D:          Number of depth slices.
-            spacing_mm: Slice thickness in mm.
-
-        Returns:
-            ``(D, embed_dim)`` — currently identical to ``forward(D)``.
-        """
-        _ = spacing_mm  # TODO: scale or modulate embeddings by spacing_mm
-        return self.forward(D)

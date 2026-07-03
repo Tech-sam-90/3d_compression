@@ -23,13 +23,21 @@ vit_model_name: vit_base_patch16_224
 vit_frozen: true
 vit_resize_to: 224
 llm_model_name: facebook/opt-1.3b
-llm_frozen: true
+llm_frozen: false   # ignored when llm_lora.enabled is true; set explicitly
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  target_modules: ["q_proj", "v_proj"]
+  dropout: 0.05
+weight_decay: 0.0
 embed_dim: 768
 cond_dim: 2048
 max_depth: 512
 instruction_encoder_model: facebook/opt-1.3b
 
 hf_token: null
+radgenome_root: null   # path to RadGenome annotations (.json/.csv); enables T4 + A4
 shuffle: true
 shuffle_buffer_size: 1000
 max_samples: null

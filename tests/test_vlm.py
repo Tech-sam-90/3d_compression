@@ -148,7 +148,7 @@ def test_variable_depth_collate_keys() -> None:
     batch = variable_depth_collate_fn(items)
     assert set(batch.keys()) == {
         "volumes", "instructions", "report_tokens",
-        "depth_spacing_mm", "label_dicts", "patient_ids",
+        "label_dicts", "patient_ids",
     }
 
 
@@ -221,20 +221,6 @@ def test_get_slice_attention_after_forward(model: MedVLM) -> None:
         model(_volumes(B, D), _instructions(B), report_tokens=None, max_new_tokens=4)
     sa = model.projector.get_slice_attention()
     assert sa.shape == (B, D), f"expected ({B}, {D}), got {sa.shape}"
-
-
-# ── depth_spacing_mm passthrough ──────────────────────────────────────────────
-
-
-def test_depth_spacing_mm_passthrough(model: MedVLM) -> None:
-    _skip_if_no_cuda()
-    report_tokens = torch.randint(0, 100, (2, 10), device=DEVICE)
-    out = model(
-        _volumes(), _instructions(),
-        report_tokens=report_tokens,
-        depth_spacing_mm=3.0,
-    )
-    assert torch.isfinite(out.loss)
 
 
 # ── Output device ─────────────────────────────────────────────────────────────

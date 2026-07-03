@@ -33,6 +33,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from aadp.data.ctrate_dataset import CTRATEDataset
+from aadp.data.multitask_sampler import MultiTaskCTRATEDataset
+from aadp.data.radgenome_dataset import RadGenomeDataset
 from aadp.models.vlm import MedVLM
 from aadp.training.factory import build_projector
 from aadp.training.losses import NextTokenLoss
@@ -119,6 +121,7 @@ def build_model(config: Dict[str, Any], device: torch.device) -> MedVLM:
         vit_resize_to=config.get("vit_resize_to"),
         llm_model_name=config["llm_model_name"],
         llm_frozen=config.get("llm_frozen", True),
+        llm_lora=config.get("llm_lora"),
         instruction_encoder_model=config.get(
             "instruction_encoder_model", config["llm_model_name"]
         ),
@@ -134,14 +137,21 @@ def build_model(config: Dict[str, Any], device: torch.device) -> MedVLM:
 def build_optimizer(
     model: MedVLM, config: Dict[str, Any]
 ) -> torch.optim.AdamW:
-    """AdamW over projector params (and visual_proj if it is a trainable linear)."""
-    import torch.nn as nn
+    """AdamW over every trainable parameter.
 
-    params = list(model.projector.parameters())
-    if not isinstance(model.visual_proj, nn.Identity):
-        params += list(model.visual_proj.parameters())
+    Collecting ``requires_grad`` params is correct because the model has already
+    frozen everything that must stay fixed: the ViT and instruction encoder are
+    frozen at construction, and LoRA wrapping (when enabled) freezes the base LLM
+    weights while marking only the adapter weights trainable.  This therefore
+    covers the projector, ``visual_proj``, and any LoRA adapters in one pass.
+    """
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
 
-    return torch.optim.AdamW(params, lr=config.get("learning_rate", 1e-4))
+    return torch.optim.AdamW(
+        trainable_params,
+        lr=config.get("learning_rate", 1e-4),
+        weight_decay=config.get("weight_decay", 0.0),
+    )
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -209,8 +219,27 @@ def main() -> None:
         token=config.get("hf_token"),
         local_data_dir=config.get("local_data_dir"),
     )
-    train_ds = CTRATEDataset(split="train", **dataset_kwargs)
-    val_ds = CTRATEDataset(split="valid", **dataset_kwargs)
+    # Optional RadGenome grounding: enables T4 localisation instructions and the
+    # A4 attention-alignment loss.  Joined to CT-RATE volumes by the volume id
+    # (filename stem, e.g. "train_1_a_1"), which both datasets share.
+    radgenome = None
+    radgenome_root = config.get("radgenome_root")
+    if radgenome_root:
+        if Path(radgenome_root).exists():
+            radgenome = RadGenomeDataset(radgenome_root)
+            log.info("Loaded RadGenome grounding from %s", radgenome_root)
+        else:
+            log.warning(
+                "radgenome_root '%s' does not exist — T4 localisation and the "
+                "A4 attention loss will be inactive.", radgenome_root,
+            )
+
+    train_ds = MultiTaskCTRATEDataset(
+        CTRATEDataset(split="train", **dataset_kwargs), radgenome_dataset=radgenome
+    )
+    val_ds = MultiTaskCTRATEDataset(
+        CTRATEDataset(split="valid", **dataset_kwargs), radgenome_dataset=radgenome
+    )
 
     # ── Model, optimizer, scheduler, loss ────────────────────────────────────
     model = build_model(config, device)
