@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from baselines.perceiver_projector import PerceiverProjector
-from baselines.medpruner_projector import MedPrunerProjector
+from aadp.baselines.perceiver_projector import PerceiverProjector
+from aadp.baselines.medpruner_projector import MedPrunerProjector
 from aadp.models.projector.aadp import AADPProjector
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

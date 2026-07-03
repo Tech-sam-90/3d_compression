@@ -45,7 +45,7 @@ def build_projector(
         )
 
     if projector_type == "attention_conditioned_aadp":
-        from ablations.attention_conditioned_stage2 import AttentionConditionedAADP
+        from aadp.ablations.attention_conditioned_stage2 import AttentionConditionedAADP
 
         return AttentionConditionedAADP(
             embed_dim=embed_dim,
@@ -57,7 +57,7 @@ def build_projector(
         )
 
     if projector_type == "perceiver":
-        from baselines.perceiver_projector import PerceiverProjector
+        from aadp.baselines.perceiver_projector import PerceiverProjector
 
         return PerceiverProjector(
             embed_dim=embed_dim,
@@ -66,7 +66,7 @@ def build_projector(
         )
 
     if projector_type == "aadp_task_cond_stage1":
-        from ablations.task_conditioned_stage1 import TaskConditionedAADP
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedAADP
 
         return TaskConditionedAADP(
             embed_dim=embed_dim,
@@ -79,7 +79,7 @@ def build_projector(
         )
 
     if projector_type == "medpruner":
-        from baselines.medpruner_projector import MedPrunerProjector
+        from aadp.baselines.medpruner_projector import MedPrunerProjector
 
         return MedPrunerProjector(
             embed_dim=embed_dim,

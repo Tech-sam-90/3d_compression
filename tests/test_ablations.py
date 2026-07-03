@@ -11,11 +11,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from ablations.attention_conditioned_stage2 import (
+from aadp.ablations.attention_conditioned_stage2 import (
     AttentionConditionedStage2,
     AttentionConditionedAADP,
 )
-from ablations.auxiliary_attention_loss import (
+from aadp.ablations.auxiliary_attention_loss import (
     AttentionAlignmentLoss,
     CombinedLoss,
 )

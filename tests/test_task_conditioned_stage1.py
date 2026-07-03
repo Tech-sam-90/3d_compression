@@ -15,7 +15,7 @@ def _skip_if_no_cuda():
 class TestTaskConditionedIntraSliceDistiller:
     def test_output_shape(self):
         _skip_if_no_cuda()
-        from ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
 
         B, D, N, C, K, cond_dim = 2, 4, 196, 192, 32, 768
         s1 = TaskConditionedIntraSliceDistiller(
@@ -29,7 +29,7 @@ class TestTaskConditionedIntraSliceDistiller:
 
     def test_film_is_identity_at_init(self):
         _skip_if_no_cuda()
-        from ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
 
         B_D, K, C, cond_dim = 8, 32, 192, 768
         s1 = TaskConditionedIntraSliceDistiller(
@@ -45,7 +45,7 @@ class TestTaskConditionedIntraSliceDistiller:
     def test_output_matches_baseline_at_init(self):
         """At init (FiLM identity), TC Stage 1 must equal baseline Stage 1."""
         _skip_if_no_cuda()
-        from ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
         from aadp.models.projector.stage1 import IntraSliceDistiller
 
         B, D, N, C, K, cond_dim = 2, 4, 196, 192, 32, 768
@@ -71,7 +71,7 @@ class TestTaskConditionedIntraSliceDistiller:
         torch.testing.assert_close(out_task, out_base, rtol=1e-5, atol=1e-5)
 
     def test_invalid_head_divisibility_raises(self):
-        from ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
 
         with pytest.raises(ValueError, match="divisible"):
             TaskConditionedIntraSliceDistiller(embed_dim=100, num_heads=8, device=DEVICE)
@@ -84,7 +84,7 @@ class TestTaskConditionedAADP:
     @pytest.fixture(scope="class")
     def model(self):
         _skip_if_no_cuda()
-        from ablations.task_conditioned_stage1 import TaskConditionedAADP
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedAADP
 
         return TaskConditionedAADP(
             embed_dim=192,
@@ -145,7 +145,7 @@ class TestTaskConditionedAADP:
 
     def test_get_slice_attention_before_forward_raises(self):
         _skip_if_no_cuda()
-        from ablations.task_conditioned_stage1 import TaskConditionedAADP
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedAADP
 
         fresh = TaskConditionedAADP(embed_dim=192, num_latents=16, num_tokens=32, device=DEVICE)
         with pytest.raises(RuntimeError, match="forward"):
@@ -158,7 +158,7 @@ class TestFactoryEntry:
     def test_factory_builds_aadp_task_cond_stage1(self):
         _skip_if_no_cuda()
         from aadp.training.factory import build_projector
-        from ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedIntraSliceDistiller
 
         config = {
             "projector": "aadp_task_cond_stage1",

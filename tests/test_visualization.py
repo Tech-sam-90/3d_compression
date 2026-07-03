@@ -24,7 +24,7 @@ def _skip_if_no_cuda() -> None:
 
 class TestVisualizeAttention:
     def test_produces_png(self, tmp_path):
-        from visualization.attention_maps import visualize_attention
+        from aadp.visualization.attention_maps import visualize_attention
 
         D = 64
         vol = torch.rand(D, 224, 224)
@@ -35,7 +35,7 @@ class TestVisualizeAttention:
         assert Path(save_path).stat().st_size > 1000
 
     def test_gt_slice_indices_highlighted(self, tmp_path):
-        from visualization.attention_maps import visualize_attention
+        from aadp.visualization.attention_maps import visualize_attention
 
         vol = torch.rand(32, 224, 224)
         attn = torch.rand(32)
@@ -45,7 +45,7 @@ class TestVisualizeAttention:
         assert Path(save_path).exists()
 
     def test_gt_slice_indices_none_graceful(self, tmp_path):
-        from visualization.attention_maps import visualize_attention
+        from aadp.visualization.attention_maps import visualize_attention
 
         vol = torch.rand(16, 224, 224)
         attn = torch.rand(16)
@@ -55,7 +55,7 @@ class TestVisualizeAttention:
         assert Path(save_path).exists()
 
     def test_single_slice_volume(self, tmp_path):
-        from visualization.attention_maps import visualize_attention
+        from aadp.visualization.attention_maps import visualize_attention
 
         vol = torch.rand(1, 224, 224)
         attn = torch.tensor([1.0])
@@ -65,7 +65,7 @@ class TestVisualizeAttention:
         assert Path(save_path).exists()
 
     def test_creates_nested_parent_dirs(self, tmp_path):
-        from visualization.attention_maps import visualize_attention
+        from aadp.visualization.attention_maps import visualize_attention
 
         vol = torch.rand(8, 64, 64)
         attn = torch.rand(8)
@@ -75,7 +75,7 @@ class TestVisualizeAttention:
 
     def test_attn_on_gpu_tensor(self, tmp_path):
         _skip_if_no_cuda()
-        from visualization.attention_maps import visualize_attention
+        from aadp.visualization.attention_maps import visualize_attention
 
         vol = torch.rand(16, 64, 64, device="cuda")
         attn = torch.rand(16, device="cuda")
@@ -109,7 +109,7 @@ def small_model():
 class TestCompareInstructions:
     def test_produces_png(self, small_model, tmp_path):
         _skip_if_no_cuda()
-        from visualization.attention_maps import compare_instructions
+        from aadp.visualization.attention_maps import compare_instructions
 
         vol = torch.rand(16, 224, 224)
         save_path = str(tmp_path / "compare.png")
@@ -124,7 +124,7 @@ class TestCompareInstructions:
 
     def test_two_instructions_two_panels(self, small_model, tmp_path):
         _skip_if_no_cuda()
-        from visualization.attention_maps import compare_instructions
+        from aadp.visualization.attention_maps import compare_instructions
 
         vol = torch.rand(8, 224, 224)
         save_path = str(tmp_path / "two_panel.png")
@@ -138,7 +138,7 @@ class TestCompareInstructions:
 
     def test_single_slice_volume(self, small_model, tmp_path):
         _skip_if_no_cuda()
-        from visualization.attention_maps import compare_instructions
+        from aadp.visualization.attention_maps import compare_instructions
 
         vol = torch.rand(1, 224, 224)
         save_path = str(tmp_path / "single_compare.png")
@@ -152,7 +152,7 @@ class TestCompareInstructions:
 
     def test_two_models_same_instruction(self, small_model, tmp_path):
         _skip_if_no_cuda()
-        from visualization.attention_maps import compare_instructions
+        from aadp.visualization.attention_maps import compare_instructions
 
         vol = torch.rand(8, 224, 224)
         save_path = str(tmp_path / "two_models.png")
@@ -201,7 +201,7 @@ class TestPlotPaperFigures:
         return str(rd)
 
     def test_produces_png_and_pdf(self, results_dir, tmp_path):
-        from visualization.compression_curves import plot_paper_figures
+        from aadp.visualization.compression_curves import plot_paper_figures
 
         save_dir = str(tmp_path / "figs")
         plot_paper_figures(results_dir, save_dir)
@@ -209,7 +209,7 @@ class TestPlotPaperFigures:
         assert len(list(Path(save_dir).glob("*.pdf"))) >= 1
 
     def test_summary_grid_produced(self, results_dir, tmp_path):
-        from visualization.compression_curves import plot_paper_figures
+        from aadp.visualization.compression_curves import plot_paper_figures
 
         save_dir = str(tmp_path / "figs2")
         plot_paper_figures(results_dir, save_dir)
@@ -217,7 +217,7 @@ class TestPlotPaperFigures:
         assert (Path(save_dir) / "summary_grid.pdf").exists()
 
     def test_per_metric_files_named_correctly(self, results_dir, tmp_path):
-        from visualization.compression_curves import plot_paper_figures
+        from aadp.visualization.compression_curves import plot_paper_figures
 
         save_dir = str(tmp_path / "figs3")
         plot_paper_figures(results_dir, save_dir)
@@ -226,7 +226,7 @@ class TestPlotPaperFigures:
         assert (Path(save_dir) / "auroc_macro.png").exists()
 
     def test_empty_results_dir_no_error(self, tmp_path):
-        from visualization.compression_curves import plot_paper_figures
+        from aadp.visualization.compression_curves import plot_paper_figures
 
         empty = str(tmp_path / "empty")
         os.makedirs(empty)
@@ -235,7 +235,7 @@ class TestPlotPaperFigures:
         plot_paper_figures(empty, save_dir)
 
     def test_single_budget_json(self, tmp_path):
-        from visualization.compression_curves import plot_paper_figures
+        from aadp.visualization.compression_curves import plot_paper_figures
 
         rd = tmp_path / "single_b"
         rd.mkdir()
@@ -245,7 +245,7 @@ class TestPlotPaperFigures:
         assert (Path(save_dir) / "radgraph_f1.png").exists()
 
     def test_creates_save_dir(self, results_dir, tmp_path):
-        from visualization.compression_curves import plot_paper_figures
+        from aadp.visualization.compression_curves import plot_paper_figures
 
         save_dir = str(tmp_path / "new" / "nested" / "dir")
         # Directory does not exist yet — must be created

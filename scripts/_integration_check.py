@@ -22,10 +22,10 @@ etext_a = torch.randn(B, 768, device=device)
 etext_b = torch.randn(B, 768, device=device)
 
 from aadp.models.projector.aadp import AADPProjector
-from ablations.attention_conditioned_stage2 import AttentionConditionedAADP
-from ablations.task_conditioned_stage1 import TaskConditionedAADP
-from baselines.perceiver_projector import PerceiverProjector
-from baselines.medpruner_projector import MedPrunerProjector
+from aadp.ablations.attention_conditioned_stage2 import AttentionConditionedAADP
+from aadp.ablations.task_conditioned_stage1 import TaskConditionedAADP
+from aadp.baselines.perceiver_projector import PerceiverProjector
+from aadp.baselines.medpruner_projector import MedPrunerProjector
 
 projectors = {
     "A-ADP (FiLM Stage2 only)":   AADPProjector(C, num_latents=16, num_tokens=M, cond_dim=768, device=device),

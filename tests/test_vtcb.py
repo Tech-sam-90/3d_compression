@@ -200,7 +200,7 @@ class TestVTCBRunner:
     def test_report_parameter_counts_positive(self, small_model):
         _skip_if_no_cuda()
         from aadp.evaluation.benchmarks.vtcb import VTCBRunner
-        from ablations.task_conditioned_stage1 import TaskConditionedAADP
+        from aadp.ablations.task_conditioned_stage1 import TaskConditionedAADP
 
         projectors = {
             "aadp": small_model.projector,

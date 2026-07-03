@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ablations.auxiliary_attention_loss import CombinedLoss  # re-export
+from aadp.ablations.auxiliary_attention_loss import CombinedLoss  # re-export
 
 __all__ = ["NextTokenLoss", "CombinedLoss"]
 

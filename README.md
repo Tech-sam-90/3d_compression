@@ -81,7 +81,7 @@ python scripts/evaluate.py \
 For paper-quality figures across all result files in a directory:
 ```bash
 python -c "
-from visualization.compression_curves import plot_paper_figures
+from aadp.visualization.compression_curves import plot_paper_figures
 plot_paper_figures('results/', 'figures/')
 "
 ```
@@ -102,7 +102,7 @@ ViT/LLM backbone) so results are directly comparable.
 
 **Attention map for a single volume** (requires a trained checkpoint):
 ```python
-from visualization.attention_maps import visualize_attention
+from aadp.visualization.attention_maps import visualize_attention
 import torch
 
 # volume: (D, H, W) tensor loaded from your dataset
@@ -114,7 +114,7 @@ visualize_attention(volume, attn, instruction="Are there lung nodules?",
 
 **Side-by-side instruction comparison** (the key qualitative figure):
 ```python
-from visualization.attention_maps import compare_instructions
+from aadp.visualization.attention_maps import compare_instructions
 
 compare_instructions(
     volume,
