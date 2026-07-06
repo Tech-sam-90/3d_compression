@@ -212,21 +212,36 @@ def download_subset_to_disk(
     n_valid: int = 100,
     token: Optional[str] = None,
     max_workers: int = 4,
+    max_gb: Optional[float] = None,
+    valid_ratio: float = 0.1,
 ) -> None:
-    """Download a fixed subset of CT-RATE NIfTI files to a local directory.
+    """Download a subset of CT-RATE **v2** NIfTI files to a local directory.
 
-    Files are saved at:
-        {local_data_dir}/dataset/{split}/{split}_{pid}/{split}_{pid}_{sid}/{name}.nii.gz
+    Files mirror the HuggingFace layout:
+        {local_data_dir}/dataset/{folder}/{name_split}_{pid}/…/{VolumeName}
 
-    Already-downloaded files are skipped, so this is safe to re-run after
-    a Colab disconnect — it resumes from where it left off.
+    Already-downloaded files are skipped, so this is safe to re-run after a
+    Colab disconnect — it resumes where it left off. Non-chest (brain) scans
+    are excluded.
+
+    Two stopping modes:
+
+    * **By count** (default): download up to ``n_train`` / ``n_valid`` volumes.
+    * **By size** (pass ``max_gb``): download until the cumulative on-disk size
+      (already-cached + newly fetched) reaches ``max_gb`` GB across both splits,
+      reserving ``valid_ratio`` of the budget for validation. In this mode
+      ``n_train`` / ``n_valid`` act only as *safety upper bounds* on the count,
+      so raise them if the budget isn't reached (e.g. 6000 / 600 for ~45 GB).
 
     Args:
-        local_data_dir: Root directory (e.g. a Google Drive path on Colab).
-        n_train: Number of training volumes to download.
-        n_valid: Number of validation volumes to download.
-        token: HuggingFace token. Resolved from env/cache if None.
-        max_workers: Parallel download threads.
+        local_data_dir: Root directory (e.g. a mounted Drive path on Colab).
+        n_train:        Max training volumes (upper bound in size mode).
+        n_valid:        Max validation volumes (upper bound in size mode).
+        token:          HuggingFace token. Resolved from env/cache if None.
+        max_workers:    Parallel download threads.
+        max_gb:         Total size budget in GB across both splits. ``None`` →
+                        count-based mode.
+        valid_ratio:    Fraction of ``max_gb`` reserved for the validation split.
     """
     try:
         from tqdm.auto import tqdm
@@ -237,55 +252,91 @@ def download_subset_to_disk(
     fs = HfFileSystem(token=resolved_token)
     root = Path(local_data_dir)
 
-    def _fetch_one(volume_name: str, folder: str) -> bool:
+    def _fetch_one(volume_name: str, folder: str) -> int:
+        """Return the on-disk size in bytes (fetching if needed); 0 on failure."""
         local_path = _local_nifti_path(root, volume_name, folder)
         if local_path.exists():
-            return True
+            return local_path.stat().st_size
         hf_path = _volume_hf_path(volume_name, folder)
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             with fs.open(hf_path, "rb") as fh:
                 raw = fh.read()
             local_path.write_bytes(raw)
-            return True
+            return len(raw)
         except Exception as exc:
             print(f"  Warning: skipping {volume_name} ({exc})")
-            return False
+            return 0
 
-    for split, n_samples in [("train", n_train), ("valid", n_valid)]:
+    # Per-split byte budgets (size mode), or None (count mode).
+    if max_gb is not None:
+        split_budgets = {
+            "train": max_gb * (1.0 - valid_ratio) * 1e9,
+            "valid": max_gb * valid_ratio * 1e9,
+        }
+    else:
+        split_budgets = {"train": None, "valid": None}
+
+    for split, count_cap in [("train", n_train), ("valid", n_valid)]:
         folder = _SPLIT_TO_FOLDER[split]
         hf_split = _SPLIT_TO_HF[split]
+        budget = split_budgets[split]
 
-        print(f"\nCollecting {n_samples} volume names from {split} split …")
         exclude = _load_no_chest_set(fs, split)  # skip non-chest (brain) scans
         stream = load_dataset(
             _HF_REPO, "reports", split=hf_split, streaming=True, token=resolved_token
         )
-        names: list[str] = []
-        for sample in stream:
-            name = sample.get("VolumeName") or sample.get("volume_name") or ""
-            if name and name not in exclude:
-                names.append(name)
-            if len(names) >= n_samples:
-                break
 
-        already = sum(
-            1 for n in names if _local_nifti_path(root, n, folder).exists()
+        target = (
+            f"~{budget / 1e9:.1f} GB" if budget is not None
+            else f"{count_cap} volumes"
         )
-        print(f"  {already}/{len(names)} already cached — downloading {len(names) - already} more …")
+        print(f"\n[{split}] downloading up to {target} …")
+
+        done_bytes = 0
+        done_count = 0
+        stream_iter = iter(stream)
+        bar = tqdm(desc=f"{split}", unit="vol") if tqdm is not None else None
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_one, n, folder): n for n in names}
-            if tqdm is not None:
-                bar = tqdm(
-                    concurrent.futures.as_completed(futures),
-                    total=len(futures),
-                    desc=f"{split} volumes",
-                )
-            else:
-                bar = concurrent.futures.as_completed(futures)
-            for future in bar:
-                future.result()
+            while True:
+                # Stop conditions: byte budget (size mode) or count cap.
+                if budget is not None and done_bytes >= budget:
+                    break
+                if done_count >= count_cap:
+                    break
+
+                # Pull the next wave of (filtered) names from the reports stream.
+                wave: list[str] = []
+                exhausted = False
+                while len(wave) < max_workers and done_count + len(wave) < count_cap:
+                    try:
+                        sample = next(stream_iter)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                    name = sample.get("VolumeName") or sample.get("volume_name") or ""
+                    if name and name not in exclude:
+                        wave.append(name)
+
+                if not wave:
+                    break
+
+                futures = {pool.submit(_fetch_one, n, folder): n for n in wave}
+                for fut in concurrent.futures.as_completed(futures):
+                    size = fut.result()
+                    if size > 0:
+                        done_bytes += size
+                        done_count += 1
+                    if bar is not None:
+                        bar.update(1)
+
+                if exhausted:
+                    break
+
+        if bar is not None:
+            bar.close()
+        print(f"[{split}] {done_count} volumes on disk (~{done_bytes / 1e9:.2f} GB)")
 
     print(f"\nDone. CT-RATE subset cached at: {root}")
 
