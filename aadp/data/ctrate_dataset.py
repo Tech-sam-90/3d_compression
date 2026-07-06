@@ -5,10 +5,10 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Iterator, Literal, Optional, Tuple
 
-import nibabel as nib
+import nibabel as nib # for reading NIfTI files
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import load_dataset # for streaming access to HuggingFace datasets
 from dotenv import load_dotenv
 from huggingface_hub import HfFileSystem, get_token
 from torch.utils.data import IterableDataset
@@ -22,12 +22,27 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 _HF_REPO = "ibrahimhamamci/CT-RATE"
 
-# HuggingFace split name → folder name inside dataset/
-# Volumes live at: dataset/{folder}/{folder}_{pid}/{folder}_{pid}_{sid}/{name}.nii.gz
-_SPLIT_TO_FOLDER = {"train": "train", "valid": "valid"}
+# HuggingFace split name → top-level folder inside dataset/.
+# We use the CT-RATE **v2** "fixed" volumes (train_fixed / valid_fixed). In v2
+# the DICOM RescaleSlope/Intercept intensity correction is already baked into
+# the NIfTI headers, so windowing the raw voxels is valid. The v1 folders
+# (train/valid) are UNCORRECTED and must not be windowed directly.
+_SPLIT_TO_FOLDER = {"train": "train_fixed", "valid": "valid_fixed"}
 
-# HuggingFace dataset split name used in load_dataset calls
+# Volumes live at:
+#   dataset/{folder}/{name_split}_{pid}/{name_split}_{pid}_{sid}/{VolumeName}
+# where {name_split} ("train"/"valid") comes from the VolumeName itself, NOT
+# from {folder} — v2 keeps the volume names (e.g. train_1_a_1.nii.gz) and their
+# nested train_1/train_1_a folders unchanged; only the top folder gains "_fixed".
+
+# HuggingFace dataset split name used in load_dataset calls (reports/labels
+# configs are shared across v1/v2 and keyed by VolumeName).
 _SPLIT_TO_HF = {"train": "train", "valid": "validation"}
+
+# Non-chest (brain) scans to exclude, per the CT-RATE data-correction note
+# (752 train + 37 valid). Listed one path per line under dataset/metadata/.
+_NO_CHEST_FILES = {"train": "no_chest_train.txt", "valid": "no_chest_valid.txt"}
+_METADATA_DIR = f"datasets/{_HF_REPO}/dataset/metadata"
 
 LABEL_COLUMNS = [
     "Medical material",
@@ -54,7 +69,10 @@ _EMPTY_LABELS: Dict[str, int] = {col: 0 for col in LABEL_COLUMNS}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-
+# this function resolves the HuggingFace token from the following sources, in order:
+# 1. Explicitly passed token argument
+# 2. HF_TOKEN environment variable (from .env)
+# 3. Cached token from huggingface-cli login
 def _resolve_token(token: Optional[str]) -> str:
     if token is not None:
         return token
@@ -70,13 +88,17 @@ def _resolve_token(token: Optional[str]) -> str:
         "CT-RATE is a gated dataset and requires authentication."
     )
 
-
+# Pre-load the labels config into a {volume_name: label_dict} mapping.
+# so that the IterableDataset can yield labels without streaming the entire labels dataset.
 def _load_labels_lookup(token: str) -> Dict[str, Dict[str, int]]:
     """Pre-load both splits of the labels config into a {volume_name: label_dict} mapping."""
     lookup: Dict[str, Dict[str, int]] = {}
     for hf_split in ("train", "validation"):
         stream = load_dataset(
-            _HF_REPO, "labels", split=hf_split, streaming=True, token=token
+            _HF_REPO, "labels", 
+            split=hf_split, 
+            streaming=True, 
+            token=token
         )
         for row in stream:
             name = row.get("VolumeName") or row.get("volume_name") or ""
@@ -85,39 +107,44 @@ def _load_labels_lookup(token: str) -> Dict[str, Dict[str, int]]:
             lookup[name] = {col: int(row[col]) for col in LABEL_COLUMNS if col in row}
     return lookup
 
-
+# this function constructs the HuggingFace filesystem path for a 
+# NIfTI file based on its volume name and folder (train/valid).
 def _volume_hf_path(volume_name: str, folder: str) -> str:
     """Construct the HuggingFace filesystem path for a NIfTI file.
 
-    Layout: dataset/{folder}/{folder}_{pid}/{folder}_{pid}_{sid}/{volume_name}
-    Example: train_1_a_1.nii.gz →
-             dataset/train/train_1/train_1_a/train_1_a_1.nii.gz
+    Layout: dataset/{folder}/{name_split}_{pid}/{name_split}_{pid}_{sid}/{volume_name}
+    Example: train_1_a_1.nii.gz (folder="train_fixed") →
+             dataset/train_fixed/train_1/train_1_a/train_1_a_1.nii.gz
     """
     stem = volume_name.replace(".nii.gz", "").replace(".nii", "")
-    parts = stem.split("_")          # [split, pid, sid, rid]
-    patient_folder = f"{folder}_{parts[1]}"
-    scan_folder = f"{folder}_{parts[1]}_{parts[2]}"
+    parts = stem.split("_")          # [name_split, pid, sid, rid]
+    name_split = parts[0]            # "train"/"valid" from the VolumeName (not the top folder)
+    patient_folder = f"{name_split}_{parts[1]}"
+    scan_folder = f"{name_split}_{parts[1]}_{parts[2]}"
     return (
         f"datasets/{_HF_REPO}/dataset/{folder}/"
         f"{patient_folder}/{scan_folder}/{volume_name}"
     )
 
-
+# this function constructs the local filesystem path for a
+# NIfTI file based on its volume name and folder (train/valid).
 def _local_nifti_path(local_data_dir: Path, volume_name: str, folder: str) -> Path:
     """Mirror of _volume_hf_path but rooted at a local directory."""
     stem = volume_name.replace(".nii.gz", "").replace(".nii", "")
     parts = stem.split("_")
-    patient_folder = f"{folder}_{parts[1]}"
-    scan_folder = f"{folder}_{parts[1]}_{parts[2]}"
+    name_split = parts[0]            # "train"/"valid" from the VolumeName (not the top folder)
+    patient_folder = f"{name_split}_{parts[1]}"
+    scan_folder = f"{name_split}_{parts[1]}_{parts[2]}"
     return (
         local_data_dir / "dataset" / folder / patient_folder / scan_folder / volume_name
     )
 
-
+# this function loads a NIfTI file from disk into a numpy array.
 def _nifti_to_array(src: Path) -> np.ndarray:
     """Load a NIfTI file from disk into a (D, H, W) float32 array."""
     img = nib.load(str(src))
     arr = np.asarray(img.dataobj, dtype=np.float32)  # (X, Y, Z)
+    # Transpose to (Z, X, Y) = (D, H, W).
     if arr.ndim == 3:
         arr = arr.transpose(2, 0, 1)  # → (D, H, W)
     return arr
@@ -153,6 +180,27 @@ def _parse_patient_id(volume_name: str) -> str:
     mask annotations back to the correct volume.
     """
     return volume_name.replace(".nii.gz", "").replace(".nii", "")
+
+
+def _load_no_chest_set(fs: HfFileSystem, split: str) -> set:
+    """Return the set of non-chest VolumeNames to exclude for ``split``.
+
+    The metadata lists one path per line (e.g. ``train/train_10100/.../
+    train_10100_a_1.nii.gz``); we key on the basename, which equals the
+    ``VolumeName`` used by the reports/labels configs.  Returns an empty set
+    (i.e. no filtering) if the list can't be read.
+    """
+    path = f"{_METADATA_DIR}/{_NO_CHEST_FILES[split]}"
+    names: set = set()
+    try:
+        with fs.open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    names.add(line.split("/")[-1])  # basename == VolumeName
+    except Exception:
+        pass  # metadata unavailable → proceed without filtering
+    return names
 
 
 # ── Bulk pre-download utility ─────────────────────────────────────────────────
@@ -209,13 +257,14 @@ def download_subset_to_disk(
         hf_split = _SPLIT_TO_HF[split]
 
         print(f"\nCollecting {n_samples} volume names from {split} split …")
+        exclude = _load_no_chest_set(fs, split)  # skip non-chest (brain) scans
         stream = load_dataset(
             _HF_REPO, "reports", split=hf_split, streaming=True, token=resolved_token
         )
         names: list[str] = []
         for sample in stream:
             name = sample.get("VolumeName") or sample.get("volume_name") or ""
-            if name:
+            if name and name not in exclude:
                 names.append(name)
             if len(names) >= n_samples:
                 break
@@ -247,6 +296,11 @@ def download_subset_to_disk(
 class CTRATEDataset(IterableDataset):
     """Streaming PyTorch IterableDataset for the CT-RATE dataset.
 
+    Uses the **v2** intensity-corrected volumes (train_fixed / valid_fixed), so
+    the HU windowing in ``window_and_normalize`` operates on correct voxel
+    values.  Non-chest (brain) scans flagged in the CT-RATE data-correction note
+    are skipped by default (``filter_non_chest=True``).
+
     If ``local_data_dir`` is provided, volumes that have been pre-downloaded
     (via ``download_subset_to_disk``) are loaded from disk.  Volumes not found
     locally fall back to HuggingFace streaming automatically.
@@ -268,6 +322,7 @@ class CTRATEDataset(IterableDataset):
         max_samples: Optional[int] = None,
         token: Optional[str] = None,
         local_data_dir: Optional[str] = None,
+        filter_non_chest: bool = True,
     ) -> None:
         super().__init__()
         if split not in ("train", "valid"):
@@ -287,6 +342,11 @@ class CTRATEDataset(IterableDataset):
         # Labels are tabular — safe to materialise once at init.
         self._labels = _load_labels_lookup(self._token)
         self._fs = HfFileSystem(token=self._token)
+
+        # Non-chest (brain) scans to drop from this split, if filtering is on.
+        self._exclude = (
+            _load_no_chest_set(self._fs, split) if filter_non_chest else set()
+        )
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -324,6 +384,10 @@ class CTRATEDataset(IterableDataset):
     ) -> Optional[Tuple[torch.Tensor, str, Dict[str, int], str]]:
         volume_name = sample.get("VolumeName") or sample.get("volume_name") or ""
         if not volume_name:
+            return None
+
+        # Drop non-chest (brain) scans flagged by the CT-RATE correction note.
+        if volume_name in self._exclude:
             return None
 
         patient_id = _parse_patient_id(volume_name)
