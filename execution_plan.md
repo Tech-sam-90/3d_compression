@@ -12,47 +12,69 @@ This plan is structured as sequential **phases**, each broken into **tasks** tha
 ## PHASE 0 — Project Scaffold & Environment
 
 ### Task 0.1 — Repository Structure
-Create the top-level project layout:
+
+**Layout convention (package-only):** all importable library code lives under the
+`aadp/` package; `scripts/`, `tests/`, and `configs/` sit at the repository root.
+The tree below reflects the current state of the repository.
 
 ```
-aadp/
-├── configs/                  # YAML experiment configs
-├── data/                     # Dataset loaders and preprocessing
-├── models/
-│   ├── encoder/              # ViT slice encoder wrapper
-│   ├── projector/            # Stage 1 and Stage 2 modules
-│   │   ├── stage1.py         # Intra-slice latent distillation
-│   │   ├── stage2.py         # Inter-slice axial aggregation + FiLM
-│   │   └── aadp.py           # Combined two-stage projector
-│   ├── film.py               # FiLM conditioning layer
-│   └── vlm.py                # Full VLM wrapper (encoder → projector → LLM)
-├── training/
-│   ├── trainer.py
-│   ├── losses.py
-│   └── scheduler.py
-├── evaluation/
-│   ├── metrics/
-│   │   ├── radgraph_f1.py
-│   │   ├── ratescore.py
-│   │   ├── auroc_f1.py
-│   │   ├── recall_at_k.py
-│   │   └── dice_overlap.py
-│   └── benchmarks/
-│       └── vtcb.py           # Volumetric Token Compression Benchmark runner
-├── baselines/
-│   ├── radfm_projector.py
-│   ├── m3d_projector.py
-│   └── medpruner_projector.py
-├── ablations/
-│   ├── attention_conditioned_stage2.py
-│   └── auxiliary_attention_loss.py
-├── visualization/
-│   └── attention_maps.py
+3d-compression/
+├── aadp/                              # importable package (all library code)
+│   ├── __init__.py
+│   ├── data/                          # dataset loaders, preprocessing, instructions
+│   │   ├── preprocessing.py           # HU windowing / normalise / pad-crop depth
+│   │   ├── ctrate_dataset.py          # CT-RATE volumes + reports + 18 labels (streaming)
+│   │   ├── radgenome_dataset.py       # slice-level grounding (eval + T4/A4 supervision)
+│   │   ├── totalseg_dataset.py        # TotalSegmentator masks (eval: Dice)
+│   │   ├── instruction_encoder.py     # instruction text → etext vector
+│   │   ├── instruction_builder.py     # build the four instruction types (T1–T4)
+│   │   └── multitask_sampler.py       # wraps CTRATE to emit one task per sample
+│   ├── models/
+│   │   ├── film.py                    # FiLM conditioning layer (γ, β from etext)
+│   │   ├── vlm.py                     # MedVLM: encoder → projector → LLM (LoRA)
+│   │   ├── encoder/
+│   │   │   └── vit_encoder.py         # frozen 2D ViT slice encoder
+│   │   └── projector/
+│   │       ├── pos_encoding.py        # 2D sinusoidal (patches) + learnable depth
+│   │       ├── stage1.py              # intra-slice latent distillation (N→K)
+│   │       ├── stage2.py              # inter-slice aggregation + FiLM (D·K→M)
+│   │       └── aadp.py                # combined two-stage projector
+│   ├── training/
+│   │   ├── losses.py                  # next-token CE (+ optional attention loss)
+│   │   ├── scheduler.py               # cosine schedule with warmup
+│   │   ├── factory.py                 # build projector variant from config
+│   │   └── trainer.py                 # training loop, collate, checkpointing
+│   ├── evaluation/
+│   │   ├── metrics/
+│   │   │   ├── radgraph_f1.py
+│   │   │   ├── ratescore.py
+│   │   │   ├── auroc_f1.py
+│   │   │   ├── recall_at_k.py
+│   │   │   └── dice_overlap.py
+│   │   ├── probes/
+│   │   │   └── classification_probe.py  # trained linear probe for T2
+│   │   └── benchmarks/
+│   │       └── vtcb.py                # Volumetric Token Compression Benchmark runner
+│   ├── baselines/
+│   │   ├── perceiver_projector.py     # RadFM/M3D-style single-stage, instruction-blind
+│   │   └── medpruner_projector.py     # similarity-based hard slice deletion
+│   ├── ablations/
+│   │   ├── attention_conditioned_stage2.py  # FiLM → cross-attention conditioning
+│   │   ├── task_conditioned_stage1.py       # instruction conditioning in Stage 1
+│   │   └── auxiliary_attention_loss.py      # KL attention-alignment loss (A4)
+│   └── visualization/
+│       ├── attention_maps.py
+│       └── compression_curves.py
 ├── scripts/
 │   ├── preprocess_ctrate.py
 │   ├── train.py
-│   └── evaluate.py
-├── tests/
+│   ├── evaluate.py
+│   ├── _integration_check.py          # manual smoke check (not part of pytest)
+│   └── _step5_vtcb_smoke.py           # manual smoke check (not part of pytest)
+├── configs/                           # YAML experiment configs (base, ablations, baselines)
+├── tests/                             # pytest suite (test_*.py)
+├── setup.py
+├── environment.yml
 ├── requirements.txt
 └── README.md
 ```
