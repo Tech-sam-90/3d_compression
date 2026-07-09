@@ -24,6 +24,10 @@ results/
 # Jupyter
 .ipynb_checkpoints/
 
+# Colab notebooks: run interactively and routinely pick up live tokens
+# (HF/GitHub/Google OAuth) in cell source or output - keep these local-only.
+colab_*.ipynb
+
 # WandB
 wandb/
 
