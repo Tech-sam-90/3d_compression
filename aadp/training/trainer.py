@@ -4,7 +4,7 @@ import logging
 import random
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -31,11 +31,29 @@ class Trainer:
         config:        Dict of hyperparameters (see key list below).
         device:        Training device. Default ``"cuda"``.
         use_wandb:     Log to Weights & Biases if available. Default ``True``.
+        on_checkpoint_saved: Optional callback invoked with the saved checkpoint's
+                       path after every ``save_checkpoint()`` call (step-based,
+                       best-val, and end-of-epoch alike). Lets a caller mirror
+                       checkpoints to external storage (e.g. an rclone copy to a
+                       Drive remote) without this module needing to know
+                       anything about where that storage lives. A raised
+                       exception from the callback is logged and swallowed —
+                       a sync failure must never abort training.
 
     Config keys consumed:
         batch_size, gradient_accumulation_steps, max_grad_norm, num_epochs,
         val_every_n_steps, save_every_n_steps, checkpoint_dir, use_attn_loss,
         mixed_precision, patience, max_report_length.
+
+    Checkpointing:
+        In addition to the step-based ``save_every_n_steps`` / ``val_every_n_steps``
+        cadence, ``train()`` unconditionally validates and checkpoints at the end
+        of every epoch — writing ``checkpoint_epoch_{N}.pt`` and overwriting
+        ``checkpoint_latest.pt`` — so a run always has a clean, resumable
+        checkpoint after each completed epoch regardless of how the step-based
+        cadence is configured. ``current_epoch`` is advanced to ``N + 1`` before
+        that save, so resuming from it via ``load_checkpoint()`` + ``train()``
+        continues with the next epoch rather than repeating the one just saved.
     """
 
     def __init__(
@@ -49,6 +67,7 @@ class Trainer:
         config: Dict[str, Any],
         device: torch.device = torch.device("cuda"),
         use_wandb: bool = True,
+        on_checkpoint_saved: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.model = model
         self.optimizer = optimizer
@@ -59,6 +78,7 @@ class Trainer:
         self.config = config
         self.device = device
         self.use_wandb = use_wandb
+        self.on_checkpoint_saved = on_checkpoint_saved
 
         self.global_step: int = 0
         self.current_epoch: int = 0
@@ -268,6 +288,27 @@ class Trainer:
                     if self.global_step % save_every == 0:
                         self.save_checkpoint()
 
+            # ── End-of-epoch: guaranteed validation + checkpoint ──────────────
+            # Runs regardless of val_every_n_steps/save_every_n_steps, so a
+            # completed epoch is never lost to an unlucky step-count alignment.
+            val_metrics = self.validate()
+            val_loss = val_metrics["val_loss"]
+            history["val_loss"].append(val_loss)
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self._no_improve_rounds = 0
+                self.save_checkpoint(filename="checkpoint_best.pt")
+            else:
+                self._no_improve_rounds += 1
+
+            # Mark this epoch complete before saving, so a fresh Trainer that
+            # loads this checkpoint and calls train() resumes at epoch+1
+            # instead of repeating the epoch just finished.
+            self.current_epoch = epoch + 1
+            self.save_checkpoint(filename=f"checkpoint_epoch_{epoch}.pt")
+            self.save_checkpoint(filename="checkpoint_latest.pt")
+            log.info("Completed epoch %d (val_loss=%.4f)", epoch, val_loss)
+
         return history
 
     # ── Auxiliary-loss helpers ────────────────────────────────────────────────
@@ -356,6 +397,16 @@ class Trainer:
         path = ckpt_dir / filename
         torch.save(ckpt, path)
         log.info("Saved checkpoint: %s", path)
+
+        if self.on_checkpoint_saved is not None:
+            try:
+                self.on_checkpoint_saved(str(path))
+            except Exception:
+                log.exception(
+                    "on_checkpoint_saved callback failed for %s — training "
+                    "continues, but this checkpoint may not be mirrored "
+                    "externally.", path,
+                )
         return str(path)
 
     def load_checkpoint(self, path: str) -> int:
