@@ -214,6 +214,7 @@ def download_subset_to_disk(
     max_workers: int = 4,
     max_gb: Optional[float] = None,
     valid_ratio: float = 0.1,
+    skip_names: Optional[set] = None,
 ) -> None:
     """Download a subset of CT-RATE **v2** NIfTI files to a local directory.
 
@@ -242,6 +243,11 @@ def download_subset_to_disk(
         max_gb:         Total size budget in GB across both splits. ``None`` →
                         count-based mode.
         valid_ratio:    Fraction of ``max_gb`` reserved for the validation split.
+        skip_names:     VolumeNames to skip in addition to the non-chest
+                        exclusion set — e.g. volumes already cached to a
+                        *different* local_data_dir (another disk), so a second
+                        call continues further into the stream instead of
+                        re-fetching the same volumes the first call already got.
     """
     try:
         from tqdm.auto import tqdm
@@ -282,7 +288,7 @@ def download_subset_to_disk(
         hf_split = _SPLIT_TO_HF[split]
         budget = split_budgets[split]
 
-        exclude = _load_no_chest_set(fs, split)  # skip non-chest (brain) scans
+        exclude = _load_no_chest_set(fs, split) | (skip_names or set())  # non-chest + caller-supplied skips
         stream = load_dataset(
             _HF_REPO, "reports", split=hf_split, streaming=True, token=resolved_token
         )
