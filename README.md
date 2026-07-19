@@ -25,6 +25,38 @@ Training uses the [CT-RATE dataset](https://huggingface.co/datasets/ibrahimhamam
 streamed directly from HuggingFace — no local download is necessary.
 The streaming dataset is implemented in [data/ctrate_dataset.py](data/ctrate_dataset.py).
 
+## CT-CLIP feature extraction (ICTC Stage 2)
+
+For the Instruction-Conditioned Token Compression (ICTC) Stage 2 line of work, the
+frozen [CT-CLIP](https://github.com/ibrahimethemhamamci/CT-CLIP) visual encoder
+(CTViT) is run once over the entire CT-RATE dataset and its pre-VQ continuous tokens
+are cached, so training reads features off disk instead of re-encoding volumes every
+epoch. Each volume yields a `(24, 24, 24, 512)` fp16 tensor (~14 MB), saved as
+`<VolumeName>.pt` so training-time code resolves it straight from the reports CSV
+`VolumeName` with a plain `volname + ".pt"` lookup. The full dataset is 50,188 volumes
+(47,149 train + 3,039 valid), ~662 GiB of features.
+
+This work lives on the `ctclip-stage2` branch. The notebooks are designed for Colab
+(T4 is sufficient — the job is download-bound, not GPU-bound) and upload to Google
+Drive via rclone.
+
+| File | Purpose |
+|------|---------|
+| [`ctclip_feasibility_test.py`](ctclip_feasibility_test.py) | GO/NO-GO probe: extracts 10 real volumes, measures per-volume size/time, projects total storage against Google Drive tiers |
+| [`extract_ctclip_features.ipynb`](extract_ctclip_features.ipynb) | Full single-account extractor: batched, resumable (checkpoint on Drive), retry-on-network-error, logs progress/ETA/throughput |
+| [`extract_ctclip_features_sharded.ipynb`](extract_ctclip_features_sharded.ipynb) | Parallel version: run on two accounts (`SHARD_INDEX` 0/1, `SHARD_COUNT` 2) that split the dataset by a stable hash of the volume name and cooperate through per-shard checkpoints — no runtime coordination needed |
+| [`benchmark_download_speed.ipynb`](benchmark_download_speed.ipynb) | Measures HuggingFace download throughput vs. concurrent-worker count |
+
+**Running it (Colab):** set a `HF_TOKEN` notebook Secret (accept the CT-RATE gated
+terms first), paste your **own** rclone Drive `client_id`/`client_secret`/token into
+the config cell, set `RCLONE_REMOTE`, then run the cells in order. The run is fully
+resumable — a crash or timeout loses at most `FLUSH_EVERY` volumes; restart and it
+picks up from the checkpoint on Drive.
+
+> **Credentials:** the extraction notebooks contain **placeholders** for `HF_TOKEN`
+> and the rclone Drive credentials. Never commit real tokens — paste them only into
+> your Colab copy, and rotate them once extraction is done.
+
 ## Training
 
 All training commands share the same entry point. Pass the appropriate config YAML

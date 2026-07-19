@@ -172,6 +172,8 @@ class MedVLM(nn.Module):
         instructions: List[str],
         report_tokens: Optional[torch.Tensor] = None,
         max_new_tokens: int = 256,
+        repetition_penalty: float = 1.3,
+        no_repeat_ngram_size: int = 3,
     ) -> Any:
         """Run the full MedVLM pipeline.
 
@@ -184,6 +186,12 @@ class MedVLM(nn.Module):
                               teacher-forcing during training. ``None`` at
                               inference.
             max_new_tokens:   Token budget for inference generation.
+            repetition_penalty: Penalizes repeated tokens during generation
+                              (>1.0 discourages repeats). Without this, a
+                              lightly-trained model tends to collapse into
+                              verbatim token loops (e.g. "No.\nNo.\nNo...").
+            no_repeat_ngram_size: Blocks any n-gram of this length from
+                              repeating verbatim during generation.
 
         Returns:
             Training   (``report_tokens`` is not None):
@@ -279,6 +287,8 @@ class MedVLM(nn.Module):
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             pad_token_id=self._llm_tokenizer.eos_token_id,
+            repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
         )
 
 

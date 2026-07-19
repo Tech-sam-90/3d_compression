@@ -95,14 +95,27 @@ if not CT_CLIP_LOCAL_DIR.exists():
 else:
     print(f"{CT_CLIP_LOCAL_DIR} already exists, skipping clone.")
 
-# The CT-CLIP repo provides transformer_maskgit (CTViT) and CT_CLIP (the
-# CTCLIP wrapper) as installable packages from its own setup.py.
+# CT-CLIP has NO setup.py at its repo root. transformer_maskgit (CTViT) and
+# CT_CLIP (the CTCLIP wrapper) are each their own installable subdirectory,
+# each nesting the real package one level deeper
+# (CT-CLIP/transformer_maskgit/transformer_maskgit/ctvit.py). Install both
+# separately, and do NOT put the repo root on sys.path: the outer
+# CT-CLIP/transformer_maskgit/ folder has no __init__.py, so it would be
+# picked up as an empty namespace package that shadows the real install
+# ("cannot import name 'CTViT' from 'transformer_maskgit' (unknown location)").
 subprocess.run(
-    [sys.executable, "-m", "pip", "install", "-q", "-e", str(CT_CLIP_LOCAL_DIR)],
+    [sys.executable, "-m", "pip", "install", "-q", "-e",
+     str(CT_CLIP_LOCAL_DIR / "transformer_maskgit")],
     check=True,
 )
-sys.path.insert(0, str(CT_CLIP_LOCAL_DIR))
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q", "-e",
+     str(CT_CLIP_LOCAL_DIR / "CT_CLIP")],
+    check=True,
+)
 print("Dependencies installed.")
+print("In Colab: RESTART THE RUNTIME now, then continue from CELL 3 - a failed "
+      "import caches a broken module in sys.modules that a re-run won't clear.")
 
 
 # ── CELL 3 — Download CT-CLIP_v2.pt weights ─────────────────────────────────
@@ -174,11 +187,33 @@ clip = CTCLIP(
     **CTCLIP_CONFIG,
 )
 
-try:
-    clip.load(str(WEIGHTS_PATH))
-except AttributeError:
-    state_dict = torch.load(str(WEIGHTS_PATH), map_location=DEVICE)
-    clip.load_state_dict(state_dict)
+# Don't use clip.load(): it does a strict load_state_dict, which rejects the
+# whole checkpoint over version drift. transformers >=4.31 removed the
+# `position_ids` buffer from BertModel's embeddings, but CT-CLIP_v2.pt was
+# saved when it still existed. It's a non-learned arange() buffer, so dropping
+# it loses nothing.
+state_dict = torch.load(str(WEIGHTS_PATH), map_location="cpu")
+state_dict.pop("text_transformer.embeddings.position_ids", None)
+
+# Load non-strictly, but REPORT what didn't match. A silently-missing
+# visual_transformer.* key would leave that part of the encoder randomly
+# initialised and make every feature this script extracts meaningless.
+missing, unexpected = clip.load_state_dict(state_dict, strict=False)
+if missing:
+    print(f"WARNING - {len(missing)} missing key(s), first few: {missing[:5]}")
+if unexpected:
+    print(f"WARNING - {len(unexpected)} unexpected key(s), first few: {unexpected[:5]}")
+if not missing and not unexpected:
+    print("All checkpoint keys matched exactly.")
+
+visual_missing = [k for k in missing if k.startswith("visual_transformer")]
+if visual_missing:
+    raise RuntimeError(
+        f"{len(visual_missing)} visual_transformer key(s) missing from the "
+        f"checkpoint (e.g. {visual_missing[:3]}). The visual encoder would be "
+        "partly random and every extracted feature meaningless - fix this "
+        "before trusting any number from this script."
+    )
 
 clip = clip.to(DEVICE)
 clip.eval()
