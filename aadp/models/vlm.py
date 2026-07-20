@@ -309,7 +309,7 @@ class MedVLM(nn.Module):
 # ── Variable-depth DataLoader collate function ────────────────────────────────
 
 
-def variable_depth_collate_fn(batch: List[Dict]) -> Dict:
+def variable_depth_collate_fn(batch: List[Dict], tokenizer=None) -> Dict:
     """Collate a batch of CT samples that may differ in D, H, and W.
 
     CT-RATE volumes vary in depth (number of slices) and spatial resolution
@@ -346,6 +346,7 @@ def variable_depth_collate_fn(batch: List[Dict]) -> Dict:
 
     # Pad report_tokens to max report length (if any are present)
     report_tokens_list = [item.get("report_tokens") for item in batch]
+    pad_id = tokenizer.pad_token_id if tokenizer is not None else 0
     if all(rt is None for rt in report_tokens_list):
         report_tokens_stacked = None
     else:
@@ -355,10 +356,10 @@ def variable_depth_collate_fn(batch: List[Dict]) -> Dict:
         padded_rts: List[torch.Tensor] = []
         for rt in report_tokens_list:
             if rt is None:
-                padded_rts.append(torch.zeros(max_L, dtype=torch.long))
+                padded_rts.append(torch.full((max_L,), pad_id, dtype=torch.long))
             else:
                 if rt.shape[0] < max_L:
-                    pad = torch.zeros(max_L - rt.shape[0], dtype=torch.long)
+                    pad = torch.full((max_L - rt.shape[0],), pad_id, dtype=torch.long)
                     rt = torch.cat([rt, pad], dim=0)
                 padded_rts.append(rt)
         report_tokens_stacked = torch.stack(padded_rts, dim=0)

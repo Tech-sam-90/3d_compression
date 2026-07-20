@@ -91,7 +91,7 @@ def _load_checkpoint(model, checkpoint_path: str, device: str) -> None:
 
 def _build_dataset(config: dict):
     try:
-        from aadp.data.ctratedataset import CTRATEDataset
+        from aadp.data.ctrate_dataset import CTRATEDataset
         from dotenv import load_dotenv
 
         load_dotenv()

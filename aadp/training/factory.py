@@ -88,8 +88,29 @@ def build_projector(
             device=device,
         )
 
+    if projector_type == "ctclip_stage2":
+        from aadp.models.ctclip_vlm import CTCLIPStage2VLM
+
+        return CTCLIPStage2VLM(
+            ctclip_dim=config.get("ctclip_dim", 512),
+            embed_dim=config.get("embed_dim", 512),
+            num_tokens=config.get("num_tokens", 64),
+            num_heads=config.get("num_heads", 8),
+            cond_dim=config.get("cond_dim", 2048),
+            use_film=config.get("use_film", True),
+            max_depth=config.get("max_depth", 24),
+            dropout=config.get("dropout", 0.0),
+            llm_model_name=config.get("llm_model_name", "facebook/opt-1.3b"),
+            llm_frozen=config.get("llm_frozen", False),
+            llm_lora=config.get("llm_lora"),
+            instruction_encoder_model=config.get(
+                "instruction_encoder_model", "facebook/opt-1.3b"
+            ),
+            device=config.get("device", "cuda"),
+        )
+
     raise ValueError(
         f"Unknown projector type: {projector_type!r}. "
         "Valid choices: 'aadp', 'aadp_task_cond_stage1', "
-        "'attention_conditioned_aadp', 'perceiver', 'medpruner'."
+        "'attention_conditioned_aadp', 'perceiver', 'medpruner', 'ctclip_stage2'."
     )
