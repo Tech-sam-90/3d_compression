@@ -4,19 +4,18 @@
 # Validates the full path:
 #     Google Drive .pt features
 #     → CTCLIPFeatureDataset
-#     → CTCLIPStage2VLM (BioMedLM backbone)
+#     → CTCLIPStage2VLM (OPT-1.3B backbone)
 #     → train_ctclip.py (20-sample run)
 #     → checkpoint saved with finite loss
 #
-# Run cells in order, top to bottom. Fill in the three user constants at
+# Run cells in order, top to bottom. Fill in the two user constants at
 # the top of CELL 1 before running anything else.
 #
-# Required Colab runtime:  GPU — A100 (40 GB) recommended.
-#   BioMedLM is loaded twice (LLM + instruction encoder) in fp32: ~21 GB of
-#   model weights alone.  A V100 (32 GB) is borderline.  A T4 (16 GB) will
-#   OOM.  See the T4 fallback note at the bottom of CELL 0.
+# Required Colab runtime:  GPU — T4 (16 GB) is sufficient.
+#   OPT-1.3B is loaded twice (LLM + instruction encoder): ~10–11 GB total.
+#   For production training, switch to BioMedLM in CELL 5 and use an A100.
 #
-# Estimated wall-clock:  ~20–40 min (model download + 20-sample training).
+# Estimated wall-clock:  ~15–30 min (model download + 20-sample training).
 
 
 # ── CELL 0 — GPU check ────────────────────────────────────────────────────────
@@ -47,18 +46,16 @@ else:
     print("\nWARNING: torch.cuda.is_available() = False")
 
 print()
-print("VRAM requirements for this smoke test (BioMedLM 2.7 B, fp32):")
-print("  LLM backbone          ~10.8 GB")
-print("  Instruction encoder   ~10.8 GB  (same model, separate instance)")
+print("VRAM requirements for this smoke test (OPT-1.3B, fp32):")
+print("  LLM backbone          ~5.2 GB")
+print("  Instruction encoder   ~5.2 GB  (same architecture, separate instance)")
 print("  Projector + activations ~1–2 GB")
 print("  ─────────────────────────────")
-print("  Total                 ~22–23 GB  →  A100 (40 GB) recommended")
+print("  Total                 ~11–12 GB  →  T4 (16 GB) fits comfortably")
 print()
-print("T4 fallback: replace in CELL 5 —")
-print("  llm_model_name: facebook/opt-1.3b")
-print("  instruction_encoder_model: facebook/opt-1.3b")
-print("  cond_dim: 2048  # OPT-1.3B hidden_size")
-print("  (also change target_modules back to [\"q_proj\", \"v_proj\"])")
+print("For production training with BioMedLM (2.7 B params): upgrade to A100")
+print("and set in CELL 5: llm_model_name / instruction_encoder_model →")
+print("  stanford-crfm/BioMedLM,  cond_dim: 2560,  target_modules: [\"c_attn\"]")
 
 
 # ── CELL 1 — Install dependencies + clone repo ───────────────────────────────
@@ -284,27 +281,27 @@ from pathlib import Path
 CHECKPOINT_DIR = "/content/checkpoints/smoke_test"
 CONFIG_PATH    = Path("/content/smoke_test.yaml")
 
-# ── BioMedLM LoRA target modules — architecture note ─────────────────────────
+# ── Model choice: OPT-1.3B (smoke test, T4-compatible) ───────────────────────
 #
-# BioMedLM (stanford-crfm/BioMedLM, 2.7 B params) is built on GPT-2 XL.
-# GPT-2's self-attention uses a *combined* QKV projection:
+# This smoke test uses facebook/opt-1.3B (1.3 B params, hidden_size = 2048).
+# Two instances (LLM + instruction encoder) occupy ~10–11 GB in fp32 — well
+# within T4's 16 GB budget.
 #
-#     self.c_attn = Conv1D(3 * embed_dim, embed_dim)   ← Q, K, V fused
-#     self.c_proj = Conv1D(embed_dim, embed_dim)        ← output projection
+# OPT attention layout (separate projections):
+#     self.q_proj = nn.Linear(embed_dim, embed_dim)
+#     self.k_proj = nn.Linear(embed_dim, embed_dim)
+#     self.v_proj = nn.Linear(embed_dim, embed_dim)
+#     self.out_proj = nn.Linear(embed_dim, embed_dim)
+# → LoRA targets: ["q_proj", "v_proj"]
 #
-# This differs from OPT (used in the default config) which has separate
-# q_proj, k_proj, v_proj nn.Linear layers that can each be targeted by name.
+# cond_dim must match hidden_size (2048).  CTCLIPStage2VLM.__init__ asserts:
+#     assert actual_cond_dim == cond_dim   # 2048 == 2048  ✓
 #
-# For BioMedLM, LoRA must target "c_attn" (the fused QKV linear).
-# PEFT ≥ 0.10 handles Conv1D layers transparently — the LoRA rank-r adapter
-# is injected on the (in_features, out_features) view of Conv1D's weight.
-#
-# DO NOT use ["q_proj", "v_proj"] with BioMedLM — those module names do not
-# exist in a GPT-2 model and PEFT will raise a ValueError.
-#
-# Also note: BioMedLM hidden_size = 2560.  cond_dim must equal this value so
-# the assertion in CTCLIPStage2VLM.__init__ passes:
-#     assert actual_cond_dim == cond_dim   # 2560 == 2560  ✓
+# ── To switch to BioMedLM for production (needs A100) ────────────────────────
+#   llm_model_name:            stanford-crfm/BioMedLM
+#   instruction_encoder_model: stanford-crfm/BioMedLM
+#   cond_dim:                  2560   # BioMedLM hidden_size
+#   target_modules:            ["c_attn"]  # GPT-2 fused QKV Conv1D, NOT q_proj/v_proj
 # ─────────────────────────────────────────────────────────────────────────────
 
 smoke_cfg = {
@@ -320,27 +317,26 @@ smoke_cfg = {
     "num_tokens": 64,
     "num_heads":  8,
 
-    # BioMedLM hidden_size = 2560 — must match instruction_encoder output_dim.
+    # OPT-1.3B hidden_size = 2048 — must match instruction_encoder output_dim.
     # CTCLIPStage2VLM.__init__ will assert this; wrong value → AssertionError.
-    "cond_dim": 2560,
+    "cond_dim": 2048,
     "use_film":  True,
     "dropout":   0.0,
 
-    # LLM backbone — BioMedLM (GPT-2 XL architecture, 2.7 B params)
-    "llm_model_name": "stanford-crfm/BioMedLM",
+    # LLM backbone — OPT-1.3B (fits T4, 16 GB)
+    "llm_model_name": "facebook/opt-1.3b",
     "llm_frozen":     False,
     "llm_lora": {
         "enabled": True,
         "r":       16,
         "alpha":   32,
-        # GPT-2 / BioMedLM: use "c_attn" (fused QKV Conv1D).
-        # NOT "q_proj" / "v_proj" — those names belong to OPT.
-        "target_modules": ["c_attn"],
+        # OPT has separate q_proj / v_proj nn.Linear layers.
+        "target_modules": ["q_proj", "v_proj"],
         "dropout": 0.05,
     },
 
-    # Instruction encoder (same model as LLM — shares tokenizer + architecture)
-    "instruction_encoder_model": "stanford-crfm/BioMedLM",
+    # Instruction encoder (same model as LLM)
+    "instruction_encoder_model": "facebook/opt-1.3b",
 
     # Training — smoke-test scale
     "device":                    "cuda",
@@ -537,10 +533,11 @@ else:
 # ── Next steps on HPC ────────────────────────────────────────────────────────
 print("Next steps — full production training on HPC / Colab A100:")
 print()
-print("  1. Model & cond_dim")
-print("       llm_model_name:              stanford-crfm/BioMedLM  (already set)")
-print("       instruction_encoder_model:   stanford-crfm/BioMedLM  (already set)")
-print("       cond_dim:                    2560                     (already set)")
+print("  1. Upgrade to BioMedLM (A100 required — ~22 GB for two instances)")
+print("       llm_model_name:              stanford-crfm/BioMedLM")
+print("       instruction_encoder_model:   stanford-crfm/BioMedLM")
+print("       cond_dim:                    2560   # BioMedLM hidden_size")
+print("       target_modules:              [\"c_attn\"]  # GPT-2 fused QKV")
 print()
 print("  2. Scale up batch / accumulation")
 print("       batch_size:                  8")
