@@ -242,25 +242,37 @@ print("\n  PASSED — feature tensors are correctly shaped and typed.")
 # ── CELL 4 — Download CT-RATE CSVs from HuggingFace ─────────────────────────
 
 import pandas as pd
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, list_repo_files
 
-HF_REPO_ID       = "ibrahimhamamci/CT-RATE"
-TRAIN_CSV_REMOTE = "radiology_text_reports/train_reports.csv"
-VALID_CSV_REMOTE = "radiology_text_reports/validation_reports.csv"
+HF_REPO_ID = "ibrahimhamamci/CT-RATE"
 
-print(f"Downloading {TRAIN_CSV_REMOTE} from {HF_REPO_ID} ...")
+# Discover the actual CSV paths — avoids hard-coding a path that may change
+print(f"Listing files in {HF_REPO_ID} ...")
+all_files = sorted(list_repo_files(HF_REPO_ID, repo_type="dataset", token=HF_TOKEN))
+csv_files = [f for f in all_files if f.endswith(".csv")]
+print(f"  CSV files found ({len(csv_files)}):")
+for f in csv_files:
+    print(f"    {f}")
+
+# Pick train / validation CSVs by keyword match
+train_csvs = [f for f in csv_files if "train" in f.lower()]
+valid_csvs = [f for f in csv_files if "valid" in f.lower() or "val" in f.lower()]
+
+if not train_csvs:
+    raise RuntimeError(f"No train CSV found in {HF_REPO_ID}. Available CSVs: {csv_files}")
+if not valid_csvs:
+    raise RuntimeError(f"No validation CSV found in {HF_REPO_ID}. Available CSVs: {csv_files}")
+
+TRAIN_CSV_REMOTE = train_csvs[0]
+VALID_CSV_REMOTE = valid_csvs[0]
+print(f"\nSelected  train: {TRAIN_CSV_REMOTE}")
+print(f"Selected  valid: {VALID_CSV_REMOTE}")
+
 train_csv_path = hf_hub_download(
-    repo_id=HF_REPO_ID,
-    repo_type="dataset",
-    filename=TRAIN_CSV_REMOTE,
-    token=HF_TOKEN,
+    repo_id=HF_REPO_ID, repo_type="dataset", filename=TRAIN_CSV_REMOTE, token=HF_TOKEN,
 )
-print(f"Downloading {VALID_CSV_REMOTE} ...")
 valid_csv_path = hf_hub_download(
-    repo_id=HF_REPO_ID,
-    repo_type="dataset",
-    filename=VALID_CSV_REMOTE,
-    token=HF_TOKEN,
+    repo_id=HF_REPO_ID, repo_type="dataset", filename=VALID_CSV_REMOTE, token=HF_TOKEN,
 )
 
 train_df = pd.read_csv(train_csv_path)
