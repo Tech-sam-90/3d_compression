@@ -97,9 +97,11 @@ subprocess.run(
 )
 
 # Additional runtime deps
+# torchao must be >=0.16.0 — peft's LoRA dispatcher checks this at init time
+# and raises ImportError if the Colab-default (0.10.0) is found.
 subprocess.run(
     [sys.executable, "-m", "pip", "install", "-q",
-     "nltk", "rouge-score", "sacrebleu", "evaluate", "peft"],
+     "nltk", "rouge-score", "sacrebleu", "evaluate", "peft", "torchao>=0.16.0"],
     check=True,
 )
 
