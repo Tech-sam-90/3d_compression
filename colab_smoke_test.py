@@ -120,6 +120,10 @@ from pathlib import Path
 # Paste your complete [driveB] rclone config block between the triple-quotes.
 # This is the same remote used during the CT-CLIP feature extraction run.
 # Obtain it with:  rclone config show driveB   on your local machine.
+#
+# NOTE: do NOT mount Google Drive via google.colab.drive — the feature data
+# lives in a different Google account (driveB).  rclone accesses it directly
+# using the OAuth token stored in this config block; no Drive mount needed.
 RCLONE_CONFIG = """\
 [driveB]
 # PASTE YOUR [driveB] BLOCK HERE — example layout:
@@ -129,10 +133,6 @@ RCLONE_CONFIG = """\
 # token = {"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}
 # team_drive =
 """
-
-# Mount Drive
-from google.colab import drive
-drive.mount("/content/drive")
 
 # Install rclone via apt (fastest on Colab)
 subprocess.run(["apt-get", "install", "-y", "-q", "rclone"], check=True)
