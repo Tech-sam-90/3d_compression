@@ -10,12 +10,12 @@ ctclip_tokens_per_slice: 576   # 24 * 24
 embed_dim: 512
 num_tokens: 64          # M — default VTCB budget; override with --set for sweep
 num_heads: 8
-cond_dim: 2048
+cond_dim: 2560
 use_film: true
 dropout: 0.0
 
 # LLM
-llm_model_name: facebook/opt-1.3b
+llm_model_name: stanford-crfm/BioMedLM
 llm_frozen: false
 llm_lora:
   enabled: true
@@ -24,7 +24,7 @@ llm_lora:
   target_modules: ["q_proj", "v_proj"]
   dropout: 0.05
 
-instruction_encoder_model: facebook/opt-1.3b
+instruction_encoder_model: stanford-crfm/BioMedLM
 
 # Training
 device: cuda
@@ -38,9 +38,11 @@ weight_decay: 0.0
 warmup_steps: 500
 val_every_n_steps: 500
 save_every_n_steps: 1000
-checkpoint_dir: checkpoints/ctclip_stage2/
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints
 patience: 5
-use_wandb: true
+use_wandb: false
+
+
 use_attn_loss: false
 
 # Tasks — T4 excluded (RadGenome unavailable)
@@ -51,10 +53,18 @@ task_weights:
   T3: 0.1
 
 # Data paths — FILL THESE IN before running
-features_train_dir: /path/to/ctrate_features/train
-features_valid_dir: /path/to/ctrate_features/valid
-ctrate_csv_train: /path/to/CT-RATE/train_reports.csv
-ctrate_csv_valid: /path/to/CT-RATE/validation_reports.csv
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+# ctrate_csv_train / ctrate_csv_valid must point at the MERGED CSVs (text
+# reports + binary abnormality labels), not the raw train_reports.csv /
+# validation_reports.csv — those only carry text columns (VolumeName,
+# ClinicalInformation_EN, Technique_EN, Findings_EN, Impressions_EN) with no
+# label columns, so T2/T3 tasks would have nothing to condition on. Run
+# `python scripts/download_ctrate_labels.py --train_csv <...train_reports.csv>
+# --valid_csv <...validation_reports.csv> --output_dir <...> --hf_token <...>`
+# first, then point these at the resulting train_merged.csv / valid_merged.csv.
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
 
 max_samples: null
 hf_token: null

@@ -27,9 +27,13 @@ from aadp.data.instruction_builder import (
 
 logger = logging.getLogger(__name__)
 
-# Columns that are never label columns
+# Columns that are never label columns. Includes the free-text report columns
+# from CT-RATE's train_reports.csv / validation_reports.csv (which the merged
+# CSV produced by scripts/download_ctrate_labels.py still carries alongside
+# the binary label columns from multi_abnormality_labels/).
 _NON_LABEL_COLS = {
-    "VolumeName", "Findings_EN", "Impressions_EN",
+    "VolumeName", "ClinicalInformation_EN", "Technique_EN",
+    "Findings_EN", "Impressions_EN",
     "split", "Split", "PatientID", "StudyDate",
 }
 
@@ -145,7 +149,10 @@ class CTCLIPFeatureDataset(Dataset):
             if c not in meta_cols and c not in candidate_label_cols:
                 try:
                     unique_vals = df[c].dropna().unique()
-                    if set(unique_vals).issubset({0, 1, 0.0, 1.0}):
+                    # len() guard: an all-NaN column has an empty unique set,
+                    # which is (vacuously) a subset of {0, 1} and would
+                    # otherwise be misdetected as a label column.
+                    if len(unique_vals) > 0 and set(unique_vals).issubset({0, 1, 0.0, 1.0}):
                         candidate_label_cols.append(c)
                 except Exception:
                     pass
