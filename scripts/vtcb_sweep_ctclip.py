@@ -55,8 +55,9 @@ def _load_config(path: str) -> Dict:
 
 
 def _score_generations(predictions: List[str], references: List[str]) -> Dict:
-    """Compute BLEU-1, BLEU-4, METEOR, ROUGE-L, CIDEr against references.
+    """Compute NLP metrics + clinical metrics against references.
 
+    Argus Table 2 metrics: Avg. NLP, GREEN, RaTEScore, RadGraph-XL F1.
     Falls back gracefully if a metric library is unavailable.
     """
     scores: Dict[str, float] = {}
@@ -100,13 +101,42 @@ def _score_generations(predictions: List[str], references: List[str]) -> Dict:
     except Exception as exc:
         logger.warning("ROUGE-L scoring failed: %s", exc)
 
-    # RadGraph F1 via aadp metric (may not be available in all environments)
+    # CIDEr via pycocoevalcap
+    try:
+        from aadp.evaluation.metrics.cider import compute_cider
+        scores["cider"] = compute_cider(predictions, references)["cider"]
+    except Exception as exc:
+        logger.debug("CIDEr unavailable: %s", exc)
+
+    # Avg. NLP = mean(BLEU-4, ROUGE-L, METEOR, CIDEr) — Argus Table 2
+    nlp_parts = [scores[k] for k in ("bleu_4", "rouge_l", "meteor", "cider") if k in scores]
+    if nlp_parts:
+        scores["avg_nlp"] = float(sum(nlp_parts) / len(nlp_parts))
+
+    # GREEN (GPU required; returns None on CPU)
+    try:
+        from aadp.evaluation.metrics.green import compute_green
+        green_val = compute_green(predictions, references)
+        scores["green"] = green_val if green_val is not None else float("nan")
+    except Exception as exc:
+        logger.debug("GREEN unavailable: %s", exc)
+
+    # RaTEScore via aadp metric
+    try:
+        from aadp.evaluation.metrics.ratescore import RaTEScore
+        rs_out = RaTEScore().compute(predictions, references)
+        scores["ratescore_mean"] = rs_out.get("ratescore_mean", float("nan"))
+        scores["ratescore_std"] = rs_out.get("ratescore_std", float("nan"))
+    except Exception as exc:
+        logger.debug("RaTEScore unavailable: %s", exc)
+
+    # RadGraph-XL F1
     try:
         from aadp.evaluation.metrics.radgraph_f1 import compute_radgraph_f1
-        rg_scores = compute_radgraph_f1(predictions, references)
-        scores["radgraph_f1"] = rg_scores.get("f1", float("nan"))
+        rg_scores = compute_radgraph_f1(predictions, references, use_xl=True)
+        scores["radgraph_xl_f1"] = rg_scores.get("f1", float("nan"))
     except Exception as exc:
-        logger.debug("RadGraph F1 unavailable: %s", exc)
+        logger.debug("RadGraph-XL F1 unavailable: %s", exc)
 
     return scores
 
@@ -296,17 +326,23 @@ def main() -> None:
         json.dump({"budgets": budgets, "results": {str(k): v for k, v in all_results.items()}}, fh, indent=2)
     logger.info("Full results saved → %s", full_results_path)
 
-    # Print summary table
-    metrics = [k for k in next(iter(all_results.values())).keys() if k != "n_samples"]
-    header = f"{'M':>6}  " + "  ".join(f"{m:>12}" for m in metrics)
+    # Argus Table 2 column order: Avg. NLP | GREEN | RaTEScore | RadGraph-XL F1
+    argus_cols = [
+        ("avg_nlp",        "Avg. NLP"),
+        ("green",          "GREEN"),
+        ("ratescore_mean", "RaTEScore"),
+        ("radgraph_xl_f1", "RG-XL F1"),
+    ]
+    hdr_parts = ["  ".join([f"{'M':>6}"] + [f"{label:>12}" for _, label in argus_cols])]
+    header = hdr_parts[0]
     print("\n" + "=" * len(header))
-    print("VTCB Sweep Summary")
+    print("VTCB Sweep — Argus Table 2 Metrics")
     print("=" * len(header))
     print(header)
     print("-" * len(header))
     for M in budgets:
         row = all_results.get(M, {})
-        vals = "  ".join(f"{row.get(m, float('nan')):>12.4f}" for m in metrics)
+        vals = "  ".join(f"{row.get(col, float('nan')):>12.4f}" for col, _ in argus_cols)
         print(f"{M:>6}  {vals}")
     print("=" * len(header))
 

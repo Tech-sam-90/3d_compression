@@ -172,13 +172,16 @@ class VTCBRunner:
                 "radgraph_recall": float("nan"),
                 "ratescore_mean": float("nan"),
                 "ratescore_std": float("nan"),
+                "cider": float("nan"),
+                "green": float("nan"),
+                "avg_nlp": float("nan"),
             }
 
         result: Dict[str, float] = {}
 
         try:
             from aadp.evaluation.metrics.radgraph_f1 import RadGraphF1
-            rg_out = RadGraphF1().compute(all_preds, all_refs)
+            rg_out = RadGraphF1(use_xl=True).compute(all_preds, all_refs)
             result["radgraph_f1"] = rg_out["f1"]
             result["radgraph_precision"] = rg_out["precision"]
             result["radgraph_recall"] = rg_out["recall"]
@@ -197,6 +200,30 @@ class VTCBRunner:
             logger.warning("[T1] RaTEScore failed: %s", e)
             result["ratescore_mean"] = float("nan")
             result["ratescore_std"] = float("nan")
+
+        try:
+            from aadp.evaluation.metrics.cider import compute_cider
+            result["cider"] = compute_cider(all_preds, all_refs)["cider"]
+        except Exception as e:
+            logger.warning("[T1] CIDEr failed: %s", e)
+            result["cider"] = float("nan")
+
+        try:
+            from aadp.evaluation.metrics.green import compute_green
+            green_val = compute_green(all_preds, all_refs)
+            result["green"] = green_val if green_val is not None else float("nan")
+        except Exception as e:
+            logger.warning("[T1] GREEN failed: %s", e)
+            result["green"] = float("nan")
+
+        # Avg. NLP = mean(BLEU-4, ROUGE-L, METEOR, CIDEr) — Argus Table 2
+        # BLEU-4, ROUGE-L, METEOR are computed in the sweep script; here we
+        # include CIDEr in the composite only when all four are present.
+        # If callers also populate bleu_4/rouge_l/meteor in result, avg_nlp will
+        # be correct; otherwise it is set to NaN so it does not mislead.
+        nlp_keys = ("bleu_4", "rouge_l", "meteor", "cider")
+        nlp_parts = [result[k] for k in nlp_keys if k in result and not math.isnan(result[k])]
+        result["avg_nlp"] = float(sum(nlp_parts) / len(nlp_parts)) if len(nlp_parts) == 4 else float("nan")
 
         return result
 
