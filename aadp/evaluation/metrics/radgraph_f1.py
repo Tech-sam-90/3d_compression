@@ -9,21 +9,26 @@ Clinical Information Extraction from Radiology Reports", 2024).
 
 Default: RadGraph-XL (``use_xl=True``) to match the Argus Table 2 protocol.
 
-KNOWN LIMITATION (as of this environment's ``transformers==5.14.1``):
+KNOWN LIMITATION (in-process, this environment's ``transformers==5.14.1``):
 ``radgraph==0.1.18`` vendors a subset of AllenNLP that calls two HF tokenizer
 methods transformers has since removed from the public API —
 ``.encode_plus()`` and ``.build_inputs_with_special_tokens()``. The former
 could be safely shimmed (a pure pass-through to ``__call__``), but the latter
 would require reimplementing model-specific special-token wrapping by hand,
 which risks silently-wrong RadGraph-XL scores if the reimplementation is
-subtly off — worse than an honest NaN for a benchmark metric. Construction
-of ``RadGraphF1`` therefore currently raises in this environment; callers
-already catch this (see ``aadp/evaluation/metrics/compute_all.py``) and
-report ``radgraph_xl_f1`` as NaN with a warning rather than crashing.
-Follow-up: run RadGraph-XL in a separate venv pinned close to the versions
-it was built against (like ``stanford-crfm/BioMedLM`` doesn't need, but
-GREEN does — see ``aadp/evaluation/metrics/green.py``), where both methods
-still exist natively and no shim is needed at all.
+subtly off — worse than an honest NaN for a benchmark metric.
+
+RadGraph-XL therefore runs via
+``aadp/evaluation/metrics/container_bridge.py`` — a separate, exactly-pinned
+Apptainer container (torch==2.2.2, transformers==4.40.0, where both removed
+methods still exist natively — no shim needed at all) built by
+``scripts/build_metrics_container.sh`` — when that container is available.
+radgraph's own declared requirements (``torch>=2.1.0``,
+``transformers>=4.39.0``, no upper bound) are satisfied by GREEN's exact
+pins, so one container serves both metrics. Falls back to the in-process
+``RadGraphF1`` class (which raises in this environment) otherwise, so this
+still degrades gracefully to NaN via ``compute_all.py`` for anyone who
+hasn't built the container.
 """
 
 from typing import Dict, List
@@ -36,6 +41,9 @@ def compute_radgraph_f1(
 ) -> Dict[str, float]:
     """Compute RadGraph F1 between predicted and reference radiology reports.
 
+    Tries the pinned Apptainer container first when ``use_xl`` (see module
+    docstring); falls back to the in-process ``RadGraphF1`` class otherwise.
+
     Args:
         predictions: List of B generated report strings.
         references:  List of B ground-truth report strings.
@@ -47,14 +55,32 @@ def compute_radgraph_f1(
         Dict with ``"precision"``, ``"recall"``, ``"f1"`` — macro-averaged.
 
     Raises:
-        ValueError:  If ``predictions`` and ``references`` differ in length.
-        ImportError: If the ``radgraph`` package is not installed.
+        ValueError:   If ``predictions`` and ``references`` differ in length.
+        ImportError:  If the ``radgraph`` package is not installed and the
+                      container is unavailable.
+        RuntimeError: If the container is available but the worker process
+                      itself fails (as opposed to the metric computation
+                      failing inside it).
     """
     if len(predictions) != len(references):
         raise ValueError(
             f"predictions and references must have the same length "
             f"({len(predictions)} != {len(references)})"
         )
+
+    if use_xl:
+        from aadp.evaluation.metrics.container_bridge import container_available, run_in_container
+
+        if container_available():
+            result = run_in_container("radgraph_xl", predictions, references)
+            if "error" in result:
+                raise RuntimeError(result["error"])
+            return {
+                "precision": float(result["precision"]),
+                "recall": float(result["recall"]),
+                "f1": float(result["f1"]),
+            }
+
     scorer = RadGraphF1(use_xl=use_xl)
     return scorer.compute(predictions, references)
 

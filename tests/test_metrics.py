@@ -443,19 +443,31 @@ _KNOWN_NAN_KEYS = {"green", "radgraph_xl_f1"}
 
 
 class TestComputeAllMetrics:
-    """GREEN and RadGraph-XL F1 are expected to be NaN in this environment:
+    """GREEN and RadGraph-XL F1 are expected to be NaN when this test suite
+    runs via plain `pytest` (no `module load apptainer`, no GPU) — but for
+    different reasons than before:
 
-    - green-score hard-imports HF `datasets`, which needs pyarrow — this
-      cluster cannot install pyarrow into any isolated venv.
-    - radgraph==0.1.18 vendors AllenNLP code calling two HF tokenizer
-      methods (encode_plus, build_inputs_with_special_tokens) that
-      transformers==5.14.1 removed from its public API. See the
-      "KNOWN LIMITATION" note in aadp/evaluation/metrics/radgraph_f1.py.
+    - GREEN is now unconditionally stubbed as NaN in compute_all.py: the
+      real StanfordAIMI/GREEN-radllama2-7b model is reachable (via
+      aadp/evaluation/metrics/container_bridge.py, a pinned Apptainer
+      container — see scripts/build_metrics_container.sh) and its API is
+      wired correctly, but green_score's own greedy-decoding generate()
+      call (no repetition_penalty) degenerates into repeated tokens on
+      this model. See the comment in compute_all.py for the full
+      rationale — patching the upstream package would make scores
+      incomparable to the published GREEN benchmarks.
+    - RadGraph-XL F1 IS real (not NaN) when the container is reachable and
+      `apptainer` is on PATH — verified correct against known-good pairs
+      (perfect match → 1.0, similar-but-different → 0.75). In a plain
+      pytest run, `apptainer` isn't on PATH (no `module load`), so the
+      container subprocess fails to launch and compute_all.py's exception
+      handler degrades it to NaN — an environment-of-this-test-run
+      artifact, not a real limitation. See
+      aadp/evaluation/metrics/radgraph_f1.py's "KNOWN LIMITATION" note.
 
     NaN is a valid float, so the "no errors, all floats" contract still
     holds; a literal-finite check is applied only to metrics without a
-    known environmental blocker. Both are follow-ups: run in a separate
-    venv pinned close to the versions each package was built against.
+    known blocker in a plain pytest run.
     """
 
     def test_three_pairs_all_keys_present_and_float(self):

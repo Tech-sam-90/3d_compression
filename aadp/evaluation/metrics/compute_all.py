@@ -123,14 +123,24 @@ def compute_all_metrics(predictions: List[str], references: List[str]) -> Dict[s
         scores["avg_nlp"] = float("nan")
 
     # ── GREEN ─────────────────────────────────────────────────────────────
-    try:
-        from aadp.evaluation.metrics.green import compute_green
-
-        green_val = compute_green(predictions, references)
-        scores["green"] = float(green_val) if green_val is not None else float("nan")
-    except Exception as exc:
-        logger.warning("GREEN unavailable, returning NaN: %s", exc)
-        scores["green"] = float("nan")
+    # Stubbed as NaN. GREEN (StanfordAIMI/GREEN-radllama2-7b) produces
+    # degenerate output under greedy decoding on multi-sentence CT reports
+    # in this environment. Patching repetition_penalty would make scores
+    # incomparable to Argus Table 2 and the original GREEN benchmarks.
+    # GREEN will be computed post-training in an isolated environment
+    # reproducing the original package's pinned dependencies.
+    #
+    # The container plumbing that runs GREEN for real (once this is
+    # resolved) is already built and wired — see
+    # aadp/evaluation/metrics/green.py, container_bridge.py, and
+    # scripts/container_metrics_worker.py / build_metrics_container.sh —
+    # it is simply not invoked here until the decoding issue is addressed.
+    logger.warning(
+        "GREEN stubbed as NaN: known upstream generation bug "
+        "(green_score's greedy decoding degenerates on this model). "
+        "See aadp/evaluation/metrics/compute_all.py for details."
+    )
+    scores["green"] = float("nan")
 
     # ── RaTEScore ─────────────────────────────────────────────────────────
     try:
