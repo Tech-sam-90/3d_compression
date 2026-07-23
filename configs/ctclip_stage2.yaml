@@ -51,7 +51,15 @@ num_epochs: 5
 batch_size: 2
 gradient_accumulation_steps: 16    # effective batch = 32
 max_grad_norm: 1.0
+# learning_rate is the LoRA/LLM-side rate. aggregator_learning_rate is a
+# separate, much higher rate for the InterSliceAggregator + visual_proj —
+# scripts/diagnose_mode_collapse.py found LoRA's gradient norm ~19x larger
+# than the aggregator's on the same backward pass, consistent with Test 1
+# showing identical generated text across 8 different CT scans (the LLM
+# learns fast, the visual signal doesn't catch up). See train_ctclip.py's
+# optimizer setup for how the two-group AdamW is constructed.
 learning_rate: 2.0e-5
+aggregator_learning_rate: 1.0e-3
 weight_decay: 0.0
 # warmup_ratio takes precedence over warmup_steps in scripts/train_ctclip.py
 # once set — 5% of real optimizer steps (num_epochs * batches / grad_accum,

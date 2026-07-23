@@ -252,9 +252,32 @@ def main() -> None:
     # ── Optimizer & scheduler ─────────────────────────────────────────────────
     from aadp.training.scheduler import get_cosine_schedule_with_warmup
 
+    # Differential LR: the diagnostic in scripts/diagnose_mode_collapse.py
+    # found LoRA's gradient norm ~19x larger than the InterSliceAggregator's
+    # on the same backward pass — the aggregator (projector.stage2) +
+    # visual_proj get their own, much higher LR so they aren't left behind
+    # while LoRA races ahead and the LLM learns to ignore a still-weak
+    # visual signal. aggregator_learning_rate defaults to 1e-3; "learning_rate"
+    # continues to mean the LoRA/LLM-side rate, unchanged in meaning.
+    aggregator_params = list(model.projector.stage2.parameters()) + list(
+        model.visual_proj.parameters()
+    )
+    aggregator_param_ids = {id(p) for p in aggregator_params}
+    other_params = [p for p in trainable_params if id(p) not in aggregator_param_ids]
+
+    aggregator_lr = cfg.get("aggregator_learning_rate", 1e-3)
+    llm_lr = cfg.get("learning_rate", 1e-4)
+    logger.info(
+        "Optimizer param groups: aggregator+visual_proj=%d tensors @ lr=%.1e, "
+        "other (LoRA etc.)=%d tensors @ lr=%.1e",
+        len(aggregator_params), aggregator_lr, len(other_params), llm_lr,
+    )
+
     optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=cfg.get("learning_rate", 1e-4),
+        [
+            {"params": aggregator_params, "lr": aggregator_lr},
+            {"params": other_params, "lr": llm_lr},
+        ],
         weight_decay=cfg.get("weight_decay", 0.0),
     )
 
