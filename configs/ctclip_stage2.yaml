@@ -21,7 +21,11 @@ llm_lora:
   enabled: true
   r: 16
   alpha: 32
-  target_modules: ["q_proj", "v_proj"]
+  # BioMedLM is GPT-2 XL architecture: attention uses a single fused QKV
+  # Conv1D layer named "c_attn", not separate q_proj/v_proj like OPT/LLaMA.
+  # q_proj/v_proj don't exist on this model — peft's get_peft_model() raises
+  # "Target modules {'q_proj', 'v_proj'} not found in the base model."
+  target_modules: ["c_attn"]
   dropout: 0.05
 
 instruction_encoder_model: stanford-crfm/BioMedLM
