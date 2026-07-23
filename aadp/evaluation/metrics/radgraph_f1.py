@@ -8,6 +8,22 @@ Supports both the standard RadGraph model and the larger RadGraph-XL model
 Clinical Information Extraction from Radiology Reports", 2024).
 
 Default: RadGraph-XL (``use_xl=True``) to match the Argus Table 2 protocol.
+
+KNOWN LIMITATION (as of this environment's ``transformers==5.14.1``):
+``radgraph==0.1.18`` vendors a subset of AllenNLP that calls two HF tokenizer
+methods transformers has since removed from the public API —
+``.encode_plus()`` and ``.build_inputs_with_special_tokens()``. The former
+could be safely shimmed (a pure pass-through to ``__call__``), but the latter
+would require reimplementing model-specific special-token wrapping by hand,
+which risks silently-wrong RadGraph-XL scores if the reimplementation is
+subtly off — worse than an honest NaN for a benchmark metric. Construction
+of ``RadGraphF1`` therefore currently raises in this environment; callers
+already catch this (see ``aadp/evaluation/metrics/compute_all.py``) and
+report ``radgraph_xl_f1`` as NaN with a warning rather than crashing.
+Follow-up: run RadGraph-XL in a separate venv pinned close to the versions
+it was built against (like ``stanford-crfm/BioMedLM`` doesn't need, but
+GREEN does — see ``aadp/evaluation/metrics/green.py``), where both methods
+still exist natively and no shim is needed at all.
 """
 
 from typing import Dict, List
@@ -31,8 +47,14 @@ def compute_radgraph_f1(
         Dict with ``"precision"``, ``"recall"``, ``"f1"`` — macro-averaged.
 
     Raises:
+        ValueError:  If ``predictions`` and ``references`` differ in length.
         ImportError: If the ``radgraph`` package is not installed.
     """
+    if len(predictions) != len(references):
+        raise ValueError(
+            f"predictions and references must have the same length "
+            f"({len(predictions)} != {len(references)})"
+        )
     scorer = RadGraphF1(use_xl=use_xl)
     return scorer.compute(predictions, references)
 
