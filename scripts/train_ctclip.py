@@ -260,8 +260,20 @@ def main() -> None:
 
     num_epochs = cfg.get("num_epochs", 5)
     steps_per_epoch = max(len(train_loader), 1)
-    num_training_steps = num_epochs * steps_per_epoch
-    warmup_steps = cfg.get("warmup_steps", 500)
+    grad_accum = cfg.get("gradient_accumulation_steps", 4)
+    # scheduler.step() only fires once per grad_accum batches (see the
+    # training loop below), not once per batch — num_training_steps must
+    # count real optimizer steps, or a warmup_ratio-derived warmup_steps
+    # would be grad_accum times too large relative to how often
+    # scheduler.step() actually gets called.
+    optimizer_steps_per_epoch = max(steps_per_epoch // grad_accum, 1)
+    num_training_steps = num_epochs * optimizer_steps_per_epoch
+
+    warmup_ratio = cfg.get("warmup_ratio")
+    if warmup_ratio is not None:
+        warmup_steps = int(warmup_ratio * num_training_steps)
+    else:
+        warmup_steps = cfg.get("warmup_steps", 500)
 
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -302,7 +314,6 @@ def main() -> None:
         )
 
     # ── Training loop ─────────────────────────────────────────────────────────
-    grad_accum = cfg.get("gradient_accumulation_steps", 4)
     max_grad_norm = cfg.get("max_grad_norm", 1.0)
     val_every = cfg.get("val_every_n_steps", 500)
     save_every = cfg.get("save_every_n_steps", 1000)
@@ -310,8 +321,10 @@ def main() -> None:
     patience_counter = 0
 
     logger.info(
-        "Starting training: %d epochs, %d steps/epoch, grad_accum=%d, amp=%s",
+        "Starting training: %d epochs, %d steps/epoch, grad_accum=%d, amp=%s, "
+        "warmup_steps=%d, num_training_steps=%d",
         num_epochs, steps_per_epoch, grad_accum, use_amp,
+        warmup_steps, num_training_steps,
     )
 
     optimizer.zero_grad()

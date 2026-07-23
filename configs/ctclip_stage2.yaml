@@ -25,7 +25,16 @@ llm_lora:
   # Conv1D layer named "c_attn", not separate q_proj/v_proj like OPT/LLaMA.
   # q_proj/v_proj don't exist on this model — peft's get_peft_model() raises
   # "Target modules {'q_proj', 'v_proj'} not found in the base model."
-  target_modules: ["c_attn"]
+  # c_proj added for wider adaptation capacity (attn output projection +
+  # MLP output projection — PEFT matches both, since GPT-2 has "c_proj" in
+  # each) after the trained checkpoint showed mode collapse (generic
+  # boilerplate output regardless of input; CIDEr=0.039, RadGraph-XL
+  # F1=0.187) despite a good-looking val_loss=0.8575. Diagnostic confirmed
+  # LoRA on c_attn alone WAS training correctly (10.3M trainable params,
+  # non-trivial post-training weights) — this wasn't a "LoRA applied to
+  # nothing" bug, so the wider target_modules + lower LR below are a
+  # hypothesis to test, not a confirmed root-cause fix.
+  target_modules: ["c_attn", "c_proj"]
   dropout: 0.05
 
 instruction_encoder_model: stanford-crfm/BioMedLM
@@ -42,13 +51,20 @@ num_epochs: 5
 batch_size: 2
 gradient_accumulation_steps: 16    # effective batch = 32
 max_grad_norm: 1.0
-learning_rate: 1.0e-4
+learning_rate: 2.0e-5
 weight_decay: 0.0
+# warmup_ratio takes precedence over warmup_steps in scripts/train_ctclip.py
+# once set — 5% of real optimizer steps (num_epochs * batches / grad_accum,
+# not raw batch count; see the comment in train_ctclip.py's scheduler setup).
+warmup_ratio: 0.05
 warmup_steps: 500
 val_every_n_steps: 500
 save_every_n_steps: 1000
 checkpoint_dir: /scratch/sadeniji/ictc_checkpoints
-patience: 5
+# Raised from 5: at val_every_n_steps=500 with ~1473 real optimizer
+# steps/epoch, patience=5 could stop training ~1700 steps into epoch 2 —
+# too early to distinguish real plateau from normal early noise.
+patience: 15
 use_wandb: false
 
 
