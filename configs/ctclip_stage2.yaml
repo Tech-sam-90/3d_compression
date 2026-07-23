@@ -34,8 +34,13 @@ instruction_encoder_model: stanford-crfm/BioMedLM
 device: cuda
 mixed_precision: true
 num_epochs: 5
-batch_size: 8
-gradient_accumulation_steps: 4    # effective batch = 32
+# batch_size=8 OOMs on a 40GB A100: BioMedLM (2.7B params) loads in fp32
+# (~10.8GB) per aadp/models/ctclip_vlm.py's explicit torch_dtype=float32,
+# plus activations for batch_size=8 at up to ~400 tokens (M=64 visual +
+# instruction + report tokens) through 32 GPT-2 layers exceeded the full
+# 39.49GB. batch_size=2 / grad_accum=16 keeps the effective batch at 32.
+batch_size: 2
+gradient_accumulation_steps: 16    # effective batch = 32
 max_grad_norm: 1.0
 learning_rate: 1.0e-4
 weight_decay: 0.0
