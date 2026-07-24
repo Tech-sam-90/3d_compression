@@ -55,90 +55,15 @@ def _load_config(path: str) -> Dict:
 
 
 def _score_generations(predictions: List[str], references: List[str]) -> Dict:
-    """Compute NLP metrics + clinical metrics against references.
+    """Compute all 8 Argus Table 2 metrics against references.
 
-    Argus Table 2 metrics: Avg. NLP, GREEN, RaTEScore, RadGraph-XL F1.
-    Falls back gracefully if a metric library is unavailable.
+    Thin wrapper around the canonical ``compute_all_metrics`` (shared with
+    ``aadp/evaluation/benchmarks/vtcb.py`` so both entry points always agree
+    on key names and Avg. NLP semantics).
     """
-    scores: Dict[str, float] = {}
+    from aadp.evaluation.metrics.compute_all import compute_all_metrics
 
-    # BLEU + METEOR via nltk
-    try:
-        from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
-        from nltk.translate.meteor_score import meteor_score
-        import nltk
-        try:
-            nltk.data.find("tokenizers/punkt")
-        except LookupError:
-            nltk.download("punkt", quiet=True)
-            nltk.download("wordnet", quiet=True)
-
-        smoothing = SmoothingFunction().method1
-        refs_tok = [[r.split()] for r in references]
-        hyps_tok = [p.split() for p in predictions]
-
-        scores["bleu_1"] = corpus_bleu(refs_tok, hyps_tok, weights=(1, 0, 0, 0),
-                                        smoothing_function=smoothing)
-        scores["bleu_4"] = corpus_bleu(refs_tok, hyps_tok,
-                                        smoothing_function=smoothing)
-        scores["meteor"] = float(
-            sum(meteor_score([r.split()], p.split())
-                for r, p in zip(references, predictions))
-            / max(len(predictions), 1)
-        )
-    except Exception as exc:
-        logger.warning("BLEU/METEOR scoring failed: %s", exc)
-
-    # ROUGE-L via rouge_score
-    try:
-        from rouge_score import rouge_scorer as rs_module
-        scorer = rs_module.RougeScorer(["rougeL"], use_stemmer=True)
-        rouge_scores = [
-            scorer.score(ref, pred)["rougeL"].fmeasure
-            for ref, pred in zip(references, predictions)
-        ]
-        scores["rouge_l"] = float(sum(rouge_scores) / max(len(rouge_scores), 1))
-    except Exception as exc:
-        logger.warning("ROUGE-L scoring failed: %s", exc)
-
-    # CIDEr via pycocoevalcap
-    try:
-        from aadp.evaluation.metrics.cider import compute_cider
-        scores["cider"] = compute_cider(predictions, references)["cider"]
-    except Exception as exc:
-        logger.debug("CIDEr unavailable: %s", exc)
-
-    # Avg. NLP = mean(BLEU-4, ROUGE-L, METEOR, CIDEr) — Argus Table 2
-    nlp_parts = [scores[k] for k in ("bleu_4", "rouge_l", "meteor", "cider") if k in scores]
-    if nlp_parts:
-        scores["avg_nlp"] = float(sum(nlp_parts) / len(nlp_parts))
-
-    # GREEN (GPU required; returns None on CPU)
-    try:
-        from aadp.evaluation.metrics.green import compute_green
-        green_val = compute_green(predictions, references)
-        scores["green"] = green_val if green_val is not None else float("nan")
-    except Exception as exc:
-        logger.debug("GREEN unavailable: %s", exc)
-
-    # RaTEScore via aadp metric
-    try:
-        from aadp.evaluation.metrics.ratescore import RaTEScore
-        rs_out = RaTEScore().compute(predictions, references)
-        scores["ratescore_mean"] = rs_out.get("ratescore_mean", float("nan"))
-        scores["ratescore_std"] = rs_out.get("ratescore_std", float("nan"))
-    except Exception as exc:
-        logger.debug("RaTEScore unavailable: %s", exc)
-
-    # RadGraph-XL F1
-    try:
-        from aadp.evaluation.metrics.radgraph_f1 import compute_radgraph_f1
-        rg_scores = compute_radgraph_f1(predictions, references, use_xl=True)
-        scores["radgraph_xl_f1"] = rg_scores.get("f1", float("nan"))
-    except Exception as exc:
-        logger.debug("RadGraph-XL F1 unavailable: %s", exc)
-
-    return scores
+    return compute_all_metrics(predictions, references)
 
 
 # ── Short fine-tune at new budget ──────────────────────────────────────────────

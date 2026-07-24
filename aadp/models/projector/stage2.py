@@ -69,7 +69,12 @@ class InterSliceAggregator(nn.Module):
         self.cross_attn = nn.MultiheadAttention(
             embed_dim, num_heads, dropout=dropout, batch_first=True
         )
-        self.norm_q = nn.LayerNorm(embed_dim)
+        # No norm_q: diagnostics (scripts/diagnose_mode_collapse.py) found its
+        # weight essentially untrained (mean~0.996, std~0.008 after training)
+        # yet still the smallest-gradient submodule of the aggregator (grad
+        # norm ~0.0009 vs cross_attn's ~0.28), i.e. not collapsed but a
+        # bottleneck on query variation reaching cross_attn. Queries entering
+        # cross-attention unnormalized is standard in Q-Former-style designs.
         self.norm_kv = nn.LayerNorm(embed_dim)
 
         # Attention weights buffer for visualisation / recall@k evaluation
@@ -125,8 +130,7 @@ class InterSliceAggregator(nn.Module):
         # Step 6: FiLM-modulate queries with instruction embedding
         q = self.film(q, etext)                    # (B, M, C)
 
-        # Step 7: pre-norm
-        q = self.norm_q(q)
+        # Step 7: pre-norm (kv only — see __init__ comment on norm_q removal)
         kv = self.norm_kv(kv)
 
         # Step 8: cross-attention with weight capture for metrics

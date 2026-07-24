@@ -1,0 +1,97 @@
+experiment_name: ctclip_stage2_llama3b
+projector: ctclip_stage2
+
+# CT-CLIP feature dimensions (fixed — do not change)
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+# Stage 2 architecture
+embed_dim: 512
+num_tokens: 64          # M — default VTCB budget; override with --set for sweep
+num_heads: 8
+# cond_dim is the INSTRUCTION ENCODER's hidden_size, not the main LLM's —
+# aadp/models/ctclip_vlm.py asserts cond_dim == instruction_encoder.output_dim
+# with no projection layer in between (self.llm.config.hidden_size is read
+# separately and only feeds visual_proj). Since there's no projection,
+# instruction_encoder_model below must also be Llama-3.2-3B-Instruct
+# (hidden_size=3072) to match — see instruction_encoder_model comment.
+cond_dim: 3072
+use_film: true
+dropout: 0.0
+
+# LLM — Llama-3.2-3B-Instruct (hidden_size=3072), matching Argus's
+# architecture family, to compare against the BioMedLM (GPT-2, 2560) run in
+# configs/ctclip_stage2.yaml.
+llm_model_name: meta-llama/Llama-3.2-3B-Instruct
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  # Llama uses separate Q/K/V/O projections (q_proj/k_proj/v_proj/o_proj),
+  # not GPT-2's fused c_attn — q_proj/v_proj is the correct, standard LoRA
+  # target for this architecture family (same as narval_smoke.yaml's
+  # facebook/opt-125m, which shares the separate-projection convention).
+  target_modules: ["q_proj", "v_proj"]
+  dropout: 0.05
+
+# Same model as llm_model_name — see the cond_dim comment above for why:
+# aadp/models/ctclip_vlm.py has no instruction-encoder-to-cond_dim
+# projection layer, so cond_dim must equal whatever model is loaded here
+# exactly. This also matches Argus's design (same model conditions and
+# generates).
+instruction_encoder_model: meta-llama/Llama-3.2-3B-Instruct
+
+# Training
+device: cuda
+mixed_precision: true
+num_epochs: 5
+# MEMORY RISK: this loads Llama-3.2-3B-Instruct TWICE (main LLM +
+# instruction encoder), both in fp32 (~12.8GB each = ~25.7GB static weights
+# alone) — aadp/models/ctclip_vlm.py explicitly forces torch_dtype=float32
+# for the main LLM, and aadp/data/instruction_encoder.py's
+# AutoModel.from_pretrained call has no dtype override, so it also defaults
+# to fp32. The equivalent BioMedLM setup (also dual-loaded, 2.7B params —
+# ~19% smaller than Llama-3.2-3B) already sat at ~97% of a 40GB A100's
+# memory at batch_size=2 (confirmed: batch_size=8 OOM'd outright). This
+# config is UNTESTED at the time of writing — the smoke test
+# (narval_smoke_llama3b.yaml) is expected to reveal whether it fits at all;
+# if it OOMs even at batch_size=1, the instruction encoder would need to
+# either load in bf16 (a real, safe option since it's frozen — no fp32
+# needed for gradient stability) or fall back to a smaller model (e.g.
+# RadBERT, 768-dim) with cond_dim reverted accordingly.
+batch_size: 2
+gradient_accumulation_steps: 16    # effective batch = 32
+max_grad_norm: 1.0
+learning_rate: 2.0e-5
+weight_decay: 0.0
+warmup_ratio: 0.05
+warmup_steps: 500
+val_every_n_steps: 500
+save_every_n_steps: 1000
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints_llama3b
+patience: 15
+use_wandb: false
+
+
+use_attn_loss: false
+
+# Tasks — T4 excluded (RadGenome unavailable)
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths — same CT-RATE features/labels as configs/ctclip_stage2.yaml
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+
+max_samples: null
+hf_token: null
+
+# VTCB sweep values (used by scripts/vtcb_sweep_ctclip.py)
+vtcb_budgets: [16, 32, 64, 128, 256, 512]

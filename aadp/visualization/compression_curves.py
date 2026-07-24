@@ -18,6 +18,16 @@ import matplotlib.pyplot as plt
 
 
 _METRIC_LABELS: Dict[str, str] = {
+    # Argus Table 2 (current — aadp.evaluation.metrics.compute_all)
+    "bleu4": "BLEU-4",
+    "rouge_l": "ROUGE-L",
+    "meteor": "METEOR",
+    "cider": "CIDEr",
+    "avg_nlp": "Avg. NLP",
+    "green": "GREEN",
+    "ratescore": "RaTEScore",
+    "radgraph_xl_f1": "RadGraph-XL F1",
+    # Legacy keys — kept so pre-Argus-integration result JSONs still plot.
     "radgraph_f1": "RadGraph F1",
     "radgraph_precision": "RadGraph Precision",
     "radgraph_recall": "RadGraph Recall",
@@ -30,7 +40,7 @@ _METRIC_LABELS: Dict[str, str] = {
     "dice_macro": "Dice (macro)",
 }
 
-_PRIMARY_METRICS = ["radgraph_f1", "ratescore_mean", "auroc_macro", "recall_at_5"]
+_PRIMARY_METRICS = ["radgraph_xl_f1", "ratescore", "auroc_macro", "recall_at_5"]
 
 _COLORS = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",

@@ -1,0 +1,85 @@
+experiment_name: ctclip_stage1
+projector: ctclip_stage2
+
+# CT-CLIP feature dimensions (fixed — do not change)
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+# Stage 2 architecture
+embed_dim: 512
+num_tokens: 64          # M — default VTCB budget; override with --set for sweep
+num_heads: 8
+cond_dim: 2560
+use_film: true
+dropout: 0.0
+
+# LLM — built and loaded (needed so Stage 2 can warm-start from this
+# checkpoint into the SAME architecture) but never invoked this stage: see
+# `stage: 1` below, which freezes all LoRA params and makes train_ctclip.py
+# call model(..., compute_lm=False), skipping visual_proj/tokenizer/LLM
+# entirely. LM loss on a frozen LoRA (zero-init delta) would be meaningless
+# and wasted compute.
+llm_model_name: stanford-crfm/BioMedLM
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  target_modules: ["c_attn", "c_proj"]
+  dropout: 0.05
+
+instruction_encoder_model: stanford-crfm/BioMedLM
+
+# ── Argus Section 5.1, Stage 1: aggregator-only ────────────────────────────
+# Train InterSliceAggregator + visual_proj + cls_head only, LoRA frozen, on
+# cls_loss (BCE over the 18 CT-RATE abnormality labels) alone. Goal: the
+# aggregator learns to produce maximally distinct, abnormality-informative
+# visual tokens BEFORE LoRA ever sees any data — motivated by the mode-collapse
+# diagnostics (scripts/diagnose_mode_collapse.py) repeatedly showing LoRA's
+# gradient dominating the aggregator's by 1-2 orders of magnitude once joint
+# LM training starts, and the LLM converging on a generic template before the
+# still-weak visual signal catches up.
+stage: 1
+num_labels: 18   # asserted against the dataset's detected label columns
+
+# Training
+device: cuda
+mixed_precision: true
+num_epochs: 2
+batch_size: 2
+gradient_accumulation_steps: 16    # effective batch = 32
+max_grad_norm: 1.0
+aggregator_learning_rate: 1.0e-3
+learning_rate: 2.0e-5   # unused this stage — LoRA is frozen, no "other" param group is built
+weight_decay: 0.0
+warmup_ratio: 0.05
+warmup_steps: 500
+val_every_n_steps: 500
+save_every_n_steps: 1000
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints_stage1
+patience: 15
+use_wandb: false
+
+use_attn_loss: false
+
+# Tasks — T4 excluded (RadGenome unavailable). Task/target text is still
+# built by the dataset even though report_tokens are unused this stage
+# (cls_loss only reads batch["labels"]).
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+
+max_samples: null
+hf_token: null
+
+# VTCB sweep values (used by scripts/vtcb_sweep_ctclip.py)
+vtcb_budgets: [16, 32, 64, 128, 256, 512]

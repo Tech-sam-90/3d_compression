@@ -10,37 +10,72 @@ ctclip_tokens_per_slice: 576   # 24 * 24
 embed_dim: 512
 num_tokens: 64          # M — default VTCB budget; override with --set for sweep
 num_heads: 8
-cond_dim: 2048
+cond_dim: 2560
 use_film: true
 dropout: 0.0
 
 # LLM
-llm_model_name: facebook/opt-1.3b
+llm_model_name: stanford-crfm/BioMedLM
 llm_frozen: false
 llm_lora:
   enabled: true
   r: 16
   alpha: 32
-  target_modules: ["q_proj", "v_proj"]
+  # BioMedLM is GPT-2 XL architecture: attention uses a single fused QKV
+  # Conv1D layer named "c_attn", not separate q_proj/v_proj like OPT/LLaMA.
+  # q_proj/v_proj don't exist on this model — peft's get_peft_model() raises
+  # "Target modules {'q_proj', 'v_proj'} not found in the base model."
+  # c_proj added for wider adaptation capacity (attn output projection +
+  # MLP output projection — PEFT matches both, since GPT-2 has "c_proj" in
+  # each) after the trained checkpoint showed mode collapse (generic
+  # boilerplate output regardless of input; CIDEr=0.039, RadGraph-XL
+  # F1=0.187) despite a good-looking val_loss=0.8575. Diagnostic confirmed
+  # LoRA on c_attn alone WAS training correctly (10.3M trainable params,
+  # non-trivial post-training weights) — this wasn't a "LoRA applied to
+  # nothing" bug, so the wider target_modules + lower LR below are a
+  # hypothesis to test, not a confirmed root-cause fix.
+  target_modules: ["c_attn", "c_proj"]
   dropout: 0.05
 
-instruction_encoder_model: facebook/opt-1.3b
+instruction_encoder_model: stanford-crfm/BioMedLM
 
 # Training
 device: cuda
 mixed_precision: true
 num_epochs: 5
-batch_size: 8
-gradient_accumulation_steps: 4    # effective batch = 32
+# batch_size=8 OOMs on a 40GB A100: BioMedLM (2.7B params) loads in fp32
+# (~10.8GB) per aadp/models/ctclip_vlm.py's explicit torch_dtype=float32,
+# plus activations for batch_size=8 at up to ~400 tokens (M=64 visual +
+# instruction + report tokens) through 32 GPT-2 layers exceeded the full
+# 39.49GB. batch_size=2 / grad_accum=16 keeps the effective batch at 32.
+batch_size: 2
+gradient_accumulation_steps: 16    # effective batch = 32
 max_grad_norm: 1.0
-learning_rate: 1.0e-4
+# learning_rate is the LoRA/LLM-side rate. aggregator_learning_rate is a
+# separate, much higher rate for the InterSliceAggregator + visual_proj —
+# scripts/diagnose_mode_collapse.py found LoRA's gradient norm ~19x larger
+# than the aggregator's on the same backward pass, consistent with Test 1
+# showing identical generated text across 8 different CT scans (the LLM
+# learns fast, the visual signal doesn't catch up). See train_ctclip.py's
+# optimizer setup for how the two-group AdamW is constructed.
+learning_rate: 2.0e-5
+aggregator_learning_rate: 1.0e-3
 weight_decay: 0.0
+# warmup_ratio takes precedence over warmup_steps in scripts/train_ctclip.py
+# once set — 5% of real optimizer steps (num_epochs * batches / grad_accum,
+# not raw batch count; see the comment in train_ctclip.py's scheduler setup).
+warmup_ratio: 0.05
 warmup_steps: 500
 val_every_n_steps: 500
 save_every_n_steps: 1000
-checkpoint_dir: checkpoints/ctclip_stage2/
-patience: 5
-use_wandb: true
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints
+# Raised from 5: at val_every_n_steps=500 with ~1473 real optimizer
+# steps/epoch, patience=5 could stop training ~1700 steps into epoch 2 —
+# too early to distinguish real plateau from normal early noise.
+patience: 15
+use_wandb: false
+
+
 use_attn_loss: false
 
 # Tasks — T4 excluded (RadGenome unavailable)
@@ -51,10 +86,18 @@ task_weights:
   T3: 0.1
 
 # Data paths — FILL THESE IN before running
-features_train_dir: /path/to/ctrate_features/train
-features_valid_dir: /path/to/ctrate_features/valid
-ctrate_csv_train: /path/to/CT-RATE/train_reports.csv
-ctrate_csv_valid: /path/to/CT-RATE/validation_reports.csv
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+# ctrate_csv_train / ctrate_csv_valid must point at the MERGED CSVs (text
+# reports + binary abnormality labels), not the raw train_reports.csv /
+# validation_reports.csv — those only carry text columns (VolumeName,
+# ClinicalInformation_EN, Technique_EN, Findings_EN, Impressions_EN) with no
+# label columns, so T2/T3 tasks would have nothing to condition on. Run
+# `python scripts/download_ctrate_labels.py --train_csv <...train_reports.csv>
+# --valid_csv <...validation_reports.csv> --output_dir <...> --hf_token <...>`
+# first, then point these at the resulting train_merged.csv / valid_merged.csv.
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
 
 max_samples: null
 hf_token: null

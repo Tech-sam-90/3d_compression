@@ -1,0 +1,57 @@
+experiment_name: narval_smoke
+projector: ctclip_stage2
+
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576
+
+embed_dim: 512
+num_tokens: 64
+num_heads: 8
+cond_dim: 768
+use_film: true
+dropout: 0.0
+
+llm_model_name: facebook/opt-125m
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  target_modules: ["q_proj", "v_proj"]
+  dropout: 0.05
+instruction_encoder_model: facebook/opt-125m
+
+device: cuda
+mixed_precision: true
+num_epochs: 1
+batch_size: 2
+gradient_accumulation_steps: 1
+max_grad_norm: 1.0
+learning_rate: 1.0e-4
+weight_decay: 0.0
+warmup_steps: 5
+val_every_n_steps: 10
+save_every_n_steps: 10
+checkpoint_dir: /scratch/sadeniji/smoke_checkpoints
+patience: 99
+use_wandb: false
+use_attn_loss: false
+
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths — Narval paths filled in manually. ctrate_csv_train/valid must
+# point at the MERGED CSVs produced by scripts/download_ctrate_labels.py (see
+# configs/ctclip_stage2.yaml for details) — the raw train_reports.csv /
+# validation_reports.csv have no label columns, so T3 has nothing to condition on.
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train: /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid: /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+max_samples: 20
+hf_token: null
+vtcb_budgets: [16, 32, 64]

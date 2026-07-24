@@ -9,9 +9,23 @@ Reference:
     Ostmeier et al., "GREEN: Generative Radiology Report Evaluation and Error
     Notation", MICCAI 2024.  Model: StanfordAIMI/GREEN-radllama2-7b.
 
+KNOWN LIMITATION (in-process, this environment's transformers==5.14.1):
+green-score hard-imports HF `datasets`, which needs pyarrow. This cluster's
+custom Python builds report a bare `linux_x86_64` platform tag rather than a
+standard `manylinux*` tag, so real PyPI wheels for pyarrow can't be
+installed into any isolated venv here — confirmed via extensive testing.
+GREEN therefore runs via aadp/evaluation/metrics/container_bridge.py — a
+separate, exactly-pinned Apptainer container (torch==2.2.2,
+transformers==4.40.0, matching upstream) built by
+scripts/build_metrics_container.sh — when that container is available.
+Falls back to the in-process attempt (which raises ImportError here)
+otherwise, so this still degrades gracefully to NaN via compute_all.py for
+anyone who hasn't built the container.
+
 Requires:
-    pip install green-score
-    GPU (returns None with a warning when no GPU is detected).
+    Container: run scripts/build_metrics_container.sh once (login node).
+    In-process fallback: pip install green-score + a working `datasets`.
+    GPU either way (returns None with a warning when no GPU is detected).
 """
 
 import warnings
@@ -27,6 +41,9 @@ def compute_green(
     GREEN evaluates clinical correctness by scoring each (hypothesis, reference)
     pair on six error categories and returning a composite mean reward.
 
+    Tries the pinned Apptainer container first (see module docstring);
+    falls back to an in-process attempt if the container isn't built.
+
     Args:
         hypotheses: List of B generated report strings.
         references: List of B ground-truth report strings.
@@ -35,7 +52,8 @@ def compute_green(
         Mean GREEN score (float in [0, 1]), or ``None`` if GPU is unavailable.
 
     Raises:
-        ImportError: If ``green-score`` is not installed.
+        ImportError: If neither the container nor an in-process
+            ``green-score`` install is available.
         ValueError:  If ``hypotheses`` and ``references`` differ in length.
     """
     if len(hypotheses) != len(references):
@@ -43,6 +61,15 @@ def compute_green(
             f"hypotheses and references must have the same length "
             f"({len(hypotheses)} != {len(references)})"
         )
+
+    from aadp.evaluation.metrics.container_bridge import container_available, run_in_container
+
+    if container_available():
+        result = run_in_container("green", hypotheses, references)
+        if "error" in result:
+            warnings.warn(result["error"], RuntimeWarning, stacklevel=2)
+            return None
+        return float(result["score"])
 
     try:
         import torch
@@ -65,12 +92,6 @@ def compute_green(
             "green-score not installed. Run: pip install green-score"
         ) from e
 
-    model = GREEN(
-        model_id_or_path="StanfordAIMI/GREEN-radllama2-7b",
-        output_dir="green_output",
-        batch_size=4,
-        return_0_if_no_green_score=True,
-        cuda=True,
-    )
+    model = GREEN(model_name="StanfordAIMI/GREEN-radllama2-7b", output_dir="green_output")
     mean_score, _, _, _, _ = model(references, hypotheses)
     return float(mean_score)
