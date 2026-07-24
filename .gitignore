@@ -34,3 +34,6 @@ wandb/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local comparison / reference repos (not part of this project)
+M3D/
