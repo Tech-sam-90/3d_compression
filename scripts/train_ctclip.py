@@ -101,6 +101,8 @@ def _save_checkpoint(
         "epoch": epoch,
         "val_loss": val_loss,
     }
+    if model.cls_head is not None:
+        state["cls_head"] = model.cls_head.state_dict()
     # Save LoRA adapter weights separately when present
     lora_state = {
         k: v for k, v in model.llm.state_dict().items() if "lora_" in k
@@ -112,9 +114,12 @@ def _save_checkpoint(
 
 
 def _load_checkpoint(path: str, model, optimizer, scheduler, device: str):
+    """Full resume (same run/config): restores optimizer + scheduler state too."""
     ckpt = torch.load(path, map_location=device)
     model.projector.load_state_dict(ckpt["projector"])
     model.visual_proj.load_state_dict(ckpt["visual_proj"])
+    if model.cls_head is not None and "cls_head" in ckpt:
+        model.cls_head.load_state_dict(ckpt["cls_head"])
     if "llm_lora" in ckpt:
         model.llm.load_state_dict(ckpt["llm_lora"], strict=False)
     optimizer.load_state_dict(ckpt["optimizer"])
@@ -126,11 +131,38 @@ def _load_checkpoint(path: str, model, optimizer, scheduler, device: str):
     return ckpt["step"], ckpt["epoch"], ckpt.get("val_loss", float("inf"))
 
 
+def _warm_start_weights(path: str, model, device: str) -> None:
+    """Weights-only load for a stage transition (e.g. Stage 1 → Stage 2):
+    projector/visual_proj/cls_head/LoRA weights carry over, but optimizer
+    and scheduler start fresh since Stage 2 trains a different set of
+    parameters at different LRs on a different schedule."""
+    ckpt = torch.load(path, map_location=device)
+    model.projector.load_state_dict(ckpt["projector"])
+    model.visual_proj.load_state_dict(ckpt["visual_proj"])
+    if model.cls_head is not None and "cls_head" in ckpt:
+        model.cls_head.load_state_dict(ckpt["cls_head"])
+    if "llm_lora" in ckpt:
+        model.llm.load_state_dict(ckpt["llm_lora"], strict=False)
+    logger.info(
+        "Warm-started weights from %s (step=%d, epoch=%d, val_loss=%.4f) — "
+        "optimizer/scheduler NOT restored (stage transition).",
+        path, ckpt["step"], ckpt["epoch"], ckpt.get("val_loss", float("inf")),
+    )
+
+
 # ── Validation ────────────────────────────────────────────────────────────────
 
 
 @torch.no_grad()
-def _validate(model, val_loader, device: str, max_batches: Optional[int] = None) -> float:
+def _validate(
+    model,
+    val_loader,
+    device: str,
+    stage: Optional[int] = None,
+    cls_loss_weight: float = 0.3,
+    bce_loss_fn: Optional[torch.nn.Module] = None,
+    max_batches: Optional[int] = None,
+) -> float:
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -139,15 +171,29 @@ def _validate(model, val_loader, device: str, max_batches: Optional[int] = None)
             break
         features = batch["features"].to(device)
         instructions = batch["instruction"]
-        target_enc = model.tokenizer(
-            batch["target"],
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=256,
-        ).input_ids.to(device)
-        out = model(features, instructions, report_tokens=target_enc, training=True)
-        total_loss += out["loss"].item()
+
+        if stage == 1:
+            # Stage 1: aggregator-only, cls_loss is the whole objective — the
+            # LLM (LoRA frozen) is never invoked, so an LM "val_loss" here
+            # would be meaningless.
+            out = model(features, instructions, training=True, compute_lm=False)
+            labels_batch = batch["labels"].to(device)
+            loss = bce_loss_fn(out["cls_logits"], labels_batch)
+        else:
+            target_enc = model.tokenizer(
+                batch["target"],
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=256,
+            ).input_ids.to(device)
+            out = model(features, instructions, report_tokens=target_enc, training=True)
+            loss = out["loss"]
+            if model.cls_head is not None:
+                labels_batch = batch["labels"].to(device)
+                loss = loss + cls_loss_weight * bce_loss_fn(out["cls_logits"], labels_batch)
+
+        total_loss += loss.item()
         n_batches += 1
     model.train()
     return total_loss / max(n_batches, 1)
@@ -199,6 +245,23 @@ def main() -> None:
         max_samples=max_samples,
     )
 
+    # ── Two-stage training (Argus Section 5.1) ─────────────────────────────────
+    # stage=1: aggregator + visual_proj + cls_head only, LoRA frozen, cls_loss
+    #          only (LLM never invoked — see forward()'s compute_lm gate).
+    # stage=2: everything unfrozen, lm_loss + cls_loss_weight * cls_loss.
+    # stage unset (legacy configs, e.g. ctclip_stage2.yaml): unchanged joint
+    # LM-only training, no cls_head at all.
+    stage = cfg.get("stage")
+    use_cls_head = stage in (1, 2)
+    num_labels = None
+    if use_cls_head:
+        num_labels = len(train_ds.label_cols)
+        cfg_num_labels = cfg.get("num_labels")
+        assert cfg_num_labels is None or cfg_num_labels == num_labels, (
+            f"num_labels mismatch: config says {cfg_num_labels} but the "
+            f"dataset detected {num_labels} label columns: {train_ds.label_cols}"
+        )
+
     batch_size = cfg.get("batch_size", 8)
     num_workers = min(cfg.get("num_workers", 8), os.cpu_count() or 4)
 
@@ -240,9 +303,27 @@ def main() -> None:
         llm_frozen=cfg.get("llm_frozen", False),
         llm_lora=cfg.get("llm_lora"),
         instruction_encoder_model=cfg.get("instruction_encoder_model", "facebook/opt-1.3b"),
+        num_labels=num_labels,
         device=device,
     )
     model.train()
+
+    # ── Stage transition: warm-start weights from a prior stage's checkpoint ──
+    resume_from = cfg.get("resume_from")
+    if resume_from and Path(resume_from).exists():
+        _warm_start_weights(resume_from, model, device)
+
+    # ── Stage-specific LoRA freezing ────────────────────────────────────────────
+    if stage == 1:
+        for n, p in model.llm.named_parameters():
+            if "lora_" in n:
+                p.requires_grad = False
+        logger.info("Stage 1: LoRA frozen — training aggregator + visual_proj + cls_head only.")
+    elif stage == 2:
+        for n, p in model.llm.named_parameters():
+            if "lora_" in n:
+                p.requires_grad = True
+        logger.info("Stage 2: LoRA unfrozen.")
 
     # ── Trainable parameters ──────────────────────────────────────────────────
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -262,22 +343,28 @@ def main() -> None:
     aggregator_params = list(model.projector.stage2.parameters()) + list(
         model.visual_proj.parameters()
     )
+    if model.cls_head is not None:
+        aggregator_params += list(model.cls_head.parameters())
     aggregator_param_ids = {id(p) for p in aggregator_params}
     other_params = [p for p in trainable_params if id(p) not in aggregator_param_ids]
 
     aggregator_lr = cfg.get("aggregator_learning_rate", 1e-3)
     llm_lr = cfg.get("learning_rate", 1e-4)
     logger.info(
-        "Optimizer param groups: aggregator+visual_proj=%d tensors @ lr=%.1e, "
+        "Optimizer param groups: aggregator+visual_proj+cls_head=%d tensors @ lr=%.1e, "
         "other (LoRA etc.)=%d tensors @ lr=%.1e",
         len(aggregator_params), aggregator_lr, len(other_params), llm_lr,
     )
 
+    # Stage 1 has no "other" (LoRA) params at all — they're frozen out of
+    # trainable_params above — so only build that param group when non-empty
+    # (an empty-params AdamW group is at best pointless, at worst an error).
+    param_groups = [{"params": aggregator_params, "lr": aggregator_lr}]
+    if other_params:
+        param_groups.append({"params": other_params, "lr": llm_lr})
+
     optimizer = torch.optim.AdamW(
-        [
-            {"params": aggregator_params, "lr": aggregator_lr},
-            {"params": other_params, "lr": llm_lr},
-        ],
+        param_groups,
         weight_decay=cfg.get("weight_decay", 0.0),
     )
 
@@ -303,6 +390,10 @@ def main() -> None:
         num_warmup_steps=warmup_steps,
         num_training_steps=num_training_steps,
     )
+
+    # ── Classification loss (cls_head only) ─────────────────────────────────────
+    cls_loss_weight = cfg.get("cls_loss_weight", 0.3)
+    bce_loss_fn = torch.nn.BCEWithLogitsLoss() if model.cls_head is not None else None
 
     # ── Mixed precision ───────────────────────────────────────────────────────
     use_amp = cfg.get("mixed_precision", True) and device != "cpu"
@@ -357,20 +448,33 @@ def main() -> None:
             features = batch["features"].to(device)
             instructions = batch["instruction"]
 
-            # Tokenize targets (report text / entity answer / yes-no)
-            target_enc = model.tokenizer(
-                batch["target"],
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=256,
-            ).input_ids.to(device)
-
             with autocast_ctx():
-                out = model(
-                    features, instructions, report_tokens=target_enc, training=True
-                )
-                loss = out["loss"] / grad_accum
+                if stage == 1:
+                    # Aggregator-only: skip the LLM entirely, cls_loss is the
+                    # whole objective (LoRA frozen ⇒ LM loss would be
+                    # meaningless and wasted compute).
+                    out = model(features, instructions, training=True, compute_lm=False)
+                    labels_batch = batch["labels"].to(device)
+                    raw_loss_t = bce_loss_fn(out["cls_logits"], labels_batch)
+                else:
+                    # Tokenize targets (report text / entity answer / yes-no)
+                    target_enc = model.tokenizer(
+                        batch["target"],
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=256,
+                    ).input_ids.to(device)
+                    out = model(
+                        features, instructions, report_tokens=target_enc, training=True
+                    )
+                    raw_loss_t = out["loss"]
+                    if model.cls_head is not None:
+                        labels_batch = batch["labels"].to(device)
+                        raw_loss_t = raw_loss_t + cls_loss_weight * bce_loss_fn(
+                            out["cls_logits"], labels_batch
+                        )
+                loss = raw_loss_t / grad_accum
 
             scaler.scale(loss).backward()
 
@@ -398,7 +502,11 @@ def main() -> None:
 
                 # ── Validation ────────────────────────────────────────────────
                 if global_step % val_every == 0:
-                    val_loss = _validate(model, val_loader, device, max_batches=50)
+                    val_loss = _validate(
+                        model, val_loader, device,
+                        stage=stage, cls_loss_weight=cls_loss_weight,
+                        bce_loss_fn=bce_loss_fn, max_batches=50,
+                    )
                     logger.info(
                         "  [val] step=%d  val_loss=%.4f  best=%.4f",
                         global_step, val_loss, best_val_loss,

@@ -1,0 +1,77 @@
+experiment_name: ctclip_stage2_final
+projector: ctclip_stage2
+
+# CT-CLIP feature dimensions (fixed — do not change)
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+# Stage 2 architecture
+embed_dim: 512
+num_tokens: 64
+num_heads: 8
+cond_dim: 2560
+use_film: true
+dropout: 0.0
+
+# LLM
+llm_model_name: stanford-crfm/BioMedLM
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  target_modules: ["c_attn", "c_proj"]
+  dropout: 0.05
+
+instruction_encoder_model: stanford-crfm/BioMedLM
+
+# ── Argus Section 5.1, Stage 2: full unfreeze ──────────────────────────────
+# LoRA unfrozen, but kept at a very small LR (1e-6) relative to the
+# aggregator's 1e-3 — deliberately: the aggregator, already trained to
+# produce abnormality-informative tokens in Stage 1, should keep leading;
+# LoRA should barely move from its Stage 1 (pretrained/near-zero-delta)
+# state, forcing the LLM to learn to USE the now-informative visual tokens
+# rather than fall back on its language prior to write a generic report.
+stage: 2
+num_labels: 18   # asserted against the dataset's detected label columns
+resume_from: /scratch/sadeniji/ictc_checkpoints_stage1/checkpoint_best.pt
+
+# Training
+device: cuda
+mixed_precision: true
+num_epochs: 3
+batch_size: 2
+gradient_accumulation_steps: 16    # effective batch = 32
+max_grad_norm: 1.0
+aggregator_learning_rate: 1.0e-3
+learning_rate: 1.0e-6              # LoRA — intentionally tiny, see comment above
+cls_loss_weight: 0.3               # loss = lm_loss + 0.3 * cls_loss
+weight_decay: 0.0
+warmup_ratio: 0.05
+warmup_steps: 500
+val_every_n_steps: 500
+save_every_n_steps: 1000
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints_stage2_final
+patience: 15
+use_wandb: false
+
+use_attn_loss: false
+
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+
+max_samples: null
+hf_token: null
+
+# VTCB sweep values (used by scripts/vtcb_sweep_ctclip.py)
+vtcb_budgets: [16, 32, 64, 128, 256, 512]

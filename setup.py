@@ -15,7 +15,6 @@ setup(
         "einops>=0.7.0",
         "SimpleITK>=2.3.0",
         "nibabel>=5.2.0",
-        "datasets>=2.18.0",
         "huggingface_hub>=0.23.0",
         "python-dotenv>=1.0.0",
         "numpy>=1.26.0",

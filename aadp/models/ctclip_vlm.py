@@ -63,6 +63,7 @@ class CTCLIPStage2VLM(nn.Module):
         llm_frozen: bool = False,
         llm_lora: Optional[Dict] = None,
         instruction_encoder_model: str = "facebook/opt-1.3b",
+        num_labels: Optional[int] = None,
         device: str = "cuda",
     ) -> None:
         super().__init__()
@@ -131,6 +132,21 @@ class CTCLIPStage2VLM(nn.Module):
         else:
             self.visual_proj = nn.Identity()
 
+        # ── Auxiliary classification head (Argus Section 5.1 two-stage training) ──
+        # Mean-pools visual_proj's (B, M, llm_hidden) output — AFTER visual_proj,
+        # not before — so cls_loss's gradient reaches visual_proj too. Stage 1
+        # trains aggregator + visual_proj + cls_head (per spec); pooling before
+        # visual_proj would leave it receiving zero gradient and stuck at random
+        # init, which is exactly what happened the first time this was tried
+        # (confirmed via checkpoint inspection: saved visual_proj weights were
+        # bit-for-bit consistent with fresh nn.Linear init, and Test 1 generation
+        # was pure gibberish — a random affine map feeding the LLM). The LLM
+        # itself is still skippable via compute_lm=False; only visual_proj (one
+        # more Linear) is now unconditionally in the Stage 1 forward path.
+        self.cls_head: Optional[nn.Module] = (
+            nn.Linear(llm_hidden, num_labels) if num_labels else None
+        )
+
         self._num_tokens = num_tokens
         self.to(_device)
 
@@ -148,6 +164,7 @@ class CTCLIPStage2VLM(nn.Module):
         instructions: List[str],
         report_tokens: Optional[torch.Tensor] = None,
         training: bool = True,
+        compute_lm: bool = True,
     ) -> Dict:
         """Run the CT-CLIP Stage 2 VLM pipeline.
 
@@ -158,9 +175,17 @@ class CTCLIPStage2VLM(nn.Module):
                            Pass ``None`` for inference.
             training:      If True and report_tokens is provided, compute LM loss.
                            If False (or report_tokens is None), generate text.
+            compute_lm:    If False, skip the tokenizer/LLM entirely (visual_proj
+                           still runs — cls_head depends on it) and return only
+                           cls_logits (requires num_labels to have been set).
+                           Used by Argus-style Stage 1 aggregator-only training,
+                           where the LLM forward pass would be wasted compute
+                           (LoRA frozen ⇒ zero contribution to loss).
 
         Returns:
-            Training: ``{"loss": Tensor scalar, "logits": Tensor (B, L, V)}``
+            Training: ``{"loss": Tensor scalar, "logits": Tensor (B, L, V),
+                         "cls_logits": Tensor (B, num_labels) if num_labels set}``
+            Stage 1 (compute_lm=False): ``{"cls_logits": Tensor (B, num_labels)}``
             Inference: ``{"generated_ids": Tensor (B, gen_len)}``
         """
         device = features.device
@@ -172,6 +197,14 @@ class CTCLIPStage2VLM(nn.Module):
         # ── Step 2: Stage 2 projection ───────────────────────────────────────
         visual = self.projector(features, etext)                 # (B, M, embed_dim)
         visual = self.visual_proj(visual).float()                # (B, M, llm_hidden)
+
+        result: Dict = {}
+        if self.cls_head is not None:
+            pooled = visual.mean(dim=1)                           # (B, llm_hidden)
+            result["cls_logits"] = self.cls_head(pooled)
+
+        if not compute_lm:
+            return result
 
         # ── Step 3: tokenize instruction strings for LLM embedding ──────────
         inst_enc = self.tokenizer(
@@ -211,7 +244,9 @@ class CTCLIPStage2VLM(nn.Module):
                 attention_mask=attention_mask,
                 labels=labels,
             )
-            return {"loss": out.loss, "logits": out.logits}
+            result["loss"] = out.loss
+            result["logits"] = out.logits
+            return result
 
         # ── Inference path ────────────────────────────────────────────────────
         inputs_embeds = torch.cat([visual, inst_embeds], dim=1)
@@ -226,7 +261,8 @@ class CTCLIPStage2VLM(nn.Module):
             repetition_penalty=1.3,
             no_repeat_ngram_size=3,
         )
-        return {"generated_ids": gen_ids}
+        result["generated_ids"] = gen_ids
+        return result
 
     # ── Budget sweep ──────────────────────────────────────────────────────────
 
