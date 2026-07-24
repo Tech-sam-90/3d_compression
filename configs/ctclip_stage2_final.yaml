@@ -27,12 +27,20 @@ llm_lora:
 instruction_encoder_model: stanford-crfm/BioMedLM
 
 # ── Argus Section 5.1, Stage 2: full unfreeze ──────────────────────────────
-# LoRA unfrozen, but kept at a very small LR (1e-6) relative to the
-# aggregator's 1e-3 — deliberately: the aggregator, already trained to
-# produce abnormality-informative tokens in Stage 1, should keep leading;
-# LoRA should barely move from its Stage 1 (pretrained/near-zero-delta)
-# state, forcing the LLM to learn to USE the now-informative visual tokens
-# rather than fall back on its language prior to write a generic report.
+# LoRA unfrozen, kept below the aggregator's LR so the aggregator (already
+# trained to produce abnormality-informative tokens in Stage 1) keeps
+# leading, forcing the LLM to learn to USE the now-informative visual
+# tokens rather than fall back on its language prior.
+#
+# LRs revised after job 66352992 (aggregator=1e-3, LoRA=1e-6) collapsed
+# into 100% NaN loss from step 2950 onward: 1e-3 on the aggregator under
+# the combined lm_loss + cls_loss_weight*cls_loss objective is suspected to
+# have caused early gradient explosion, while 1e-6 on LoRA was too small to
+# meaningfully adapt in the ~500 steps completed before the run died. Now:
+# aggregator=2e-4 (was 1e-3), LoRA=1e-5 (was 1e-6), max_grad_norm=0.5 (was
+# 1.0), cls_loss_weight=0.1 (was 0.3, to reduce dual-loss instability while
+# lm_loss is still large early on). Unverified — gated behind the Change 6
+# smoke test (configs/narval_smoke_stage2.yaml) before any full run.
 stage: 2
 num_labels: 18   # asserted against the dataset's detected label columns
 resume_from: /scratch/sadeniji/ictc_checkpoints_stage1/checkpoint_best.pt
@@ -40,13 +48,17 @@ resume_from: /scratch/sadeniji/ictc_checkpoints_stage1/checkpoint_best.pt
 # Training
 device: cuda
 mixed_precision: true
+# CT-RATE reports avg ~201 tokens, max ~824 (verified against
+# train_merged.csv) — 256 was silently truncating most reports. Argus
+# Appendix B uses 1024.
+max_length: 1024
 num_epochs: 3
-batch_size: 2
-gradient_accumulation_steps: 16    # effective batch = 32
-max_grad_norm: 1.0
-aggregator_learning_rate: 1.0e-3
-learning_rate: 1.0e-6              # LoRA — intentionally tiny, see comment above
-cls_loss_weight: 0.3               # loss = lm_loss + 0.3 * cls_loss
+batch_size: 1                      # down from 2 — 1024-token sequences need more activation memory
+gradient_accumulation_steps: 32    # up from 16 — keeps effective batch = 32
+max_grad_norm: 0.5                 # down from 1.0 — tighter clip after job 66352992's NaN collapse
+aggregator_learning_rate: 2.0e-4   # down from 1e-3 — suspected gradient-explosion source (dual LM+BCE loss)
+learning_rate: 1.0e-5               # up from 1e-6 — was too small to adapt in ~500 steps before the run died
+cls_loss_weight: 0.1                # down from 0.3 — reduces dual-loss instability while LM loss is still large
 weight_decay: 0.0
 warmup_ratio: 0.05
 warmup_steps: 500

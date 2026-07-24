@@ -46,9 +46,14 @@ num_labels: 18   # asserted against the dataset's detected label columns
 # Training
 device: cuda
 mixed_precision: true
+# Unused this stage (cls_loss only, report_tokens never tokenized — see
+# forward()'s compute_lm gate) but set for consistency with Stage 2's config,
+# since Stage 2 warm-starts from this stage's checkpoint into the same
+# architecture.
+max_length: 1024
 num_epochs: 2
-batch_size: 2
-gradient_accumulation_steps: 16    # effective batch = 32
+batch_size: 1                      # down from 2 — 1024-token sequences need more activation memory
+gradient_accumulation_steps: 32    # up from 16 — keeps effective batch = 32
 max_grad_norm: 1.0
 aggregator_learning_rate: 1.0e-3
 learning_rate: 2.0e-5   # unused this stage — LoRA is frozen, no "other" param group is built

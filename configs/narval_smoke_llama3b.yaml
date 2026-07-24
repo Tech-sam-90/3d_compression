@@ -26,6 +26,7 @@ instruction_encoder_model: meta-llama/Llama-3.2-3B-Instruct
 
 device: cuda
 mixed_precision: true
+max_length: 1024
 num_epochs: 1
 batch_size: 2
 # gradient_accumulation_steps dropped from the parent's 16 to 1: with only

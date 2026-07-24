@@ -1,0 +1,82 @@
+experiment_name: narval_smoke_stage2
+projector: ctclip_stage2
+
+# CT-CLIP feature dimensions (fixed — do not change)
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+# Stage 2 architecture
+embed_dim: 512
+num_tokens: 64
+num_heads: 8
+cond_dim: 2560
+use_film: true
+dropout: 0.0
+
+# LLM
+llm_model_name: stanford-crfm/BioMedLM
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  target_modules: ["c_attn", "c_proj"]   # unused now — find_lora_target_modules() auto-discovers, falls back to this
+  dropout: 0.05
+
+instruction_encoder_model: stanford-crfm/BioMedLM
+
+# ── Argus Section 5.1, Stage 2 smoke test ───────────────────────────────────
+# Same revised hyperparameters as configs/ctclip_stage2_final.yaml (see that
+# file's comment for the job-66352992 NaN post-mortem this is meant to
+# de-risk). Gates the full Stage 2 run per Change 6: watch the first 300
+# steps for ANY NaN before submitting train_ictc_stage2.sh.
+stage: 2
+num_labels: 18
+resume_from: /scratch/sadeniji/ictc_checkpoints_stage1/checkpoint_best.pt
+
+# Training
+device: cuda
+mixed_precision: true
+max_length: 1024
+max_samples: 200
+num_epochs: 2
+batch_size: 1
+# Overridden from the parent config's 32 down to 1: global_step only
+# increments on real optimizer steps (once per grad_accum batches — see
+# scripts/train_ctclip.py's `if (batch_idx + 1) % grad_accum == 0` block).
+# At grad_accum=32 with only 200 samples, 2 epochs would produce ~12 total
+# optimizer steps — nowhere near enough to "watch the first 300 steps" for
+# NaN. grad_accum=1 gives up to ~400 steps (200 samples/batch_size=1 * 2
+# epochs), matching the same fix already used in smoke_test_stage1.sh.
+gradient_accumulation_steps: 1
+max_grad_norm: 0.5
+aggregator_learning_rate: 2.0e-4
+learning_rate: 1.0e-5
+cls_loss_weight: 0.1
+weight_decay: 0.0
+warmup_ratio: 0.05
+val_every_n_steps: 50
+save_every_n_steps: 100
+checkpoint_dir: /scratch/sadeniji/smoke_checkpoints_stage2
+patience: 99
+use_wandb: false
+
+use_attn_loss: false
+
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+
+hf_token: null
+
+# VTCB sweep values (used by scripts/vtcb_sweep_ctclip.py)
+vtcb_budgets: [16, 32, 64, 128, 256, 512]

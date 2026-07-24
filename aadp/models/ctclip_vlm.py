@@ -17,6 +17,28 @@ from aadp.data.instruction_encoder import InstructionEncoder
 from aadp.models.projector.ctclip_stage2 import CTCLIPStage2Projector
 
 
+def find_lora_target_modules(model: nn.Module) -> List[str]:
+    """Auto-discover LoRA target module names (adapted from M3D's find_all_linear_names).
+
+    Scans ``model`` for ``nn.Linear`` submodules and returns the set of
+    distinct leaf names, excluding modules that shouldn't get LoRA adapters
+    (projection/head/embedding layers). Intended to be called on the base
+    LLM (``self.llm``) before it's wrapped by ``get_peft_model`` — after
+    wrapping, module names/structure change and Linear layers become
+    ``lora.Linear`` wrappers.
+    """
+    exclude = [
+        "visual_proj", "projector", "cls_head",
+        "instruction_encoder", "lm_head", "embed_tokens"
+    ]
+    names = set()
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            if not any(kw in name for kw in exclude):
+                names.add(name.split(".")[-1])
+    return sorted(names)
+
+
 class CTCLIPStage2VLM(nn.Module):
     """Full VLM that skips ViT + Stage 1 and feeds CT-CLIP features to Stage 2.
 
@@ -101,16 +123,28 @@ class CTCLIPStage2VLM(nn.Module):
         self.llm = AutoModelForCausalLM.from_pretrained(
             llm_model_name, torch_dtype=torch.float32
         )
+        # Trades ~30% speed for activation-memory savings needed to fit
+        # 1024-token sequences on A100-40G. Safe here without
+        # enable_input_require_grads(): inputs_embeds is a concat that
+        # includes `visual` (from the trainable visual_proj), so it already
+        # requires grad — the usual frozen-embedding gotcha doesn't apply.
+        self.llm.gradient_checkpointing_enable()
         llm_hidden: int = self.llm.config.hidden_size
 
         if llm_lora is not None and llm_lora.get("enabled", False):
             from peft import LoraConfig, TaskType, get_peft_model
 
+            target_modules = find_lora_target_modules(self.llm)
+            print(f"LoRA targets: {target_modules}")
+            if not target_modules:
+                target_modules = ["c_attn", "c_proj"]
+                print(f"find_lora_target_modules found nothing; falling back to {target_modules}")
+
             peft_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
                 r=llm_lora.get("r", 16),
                 lora_alpha=llm_lora.get("alpha", 32),
-                target_modules=llm_lora.get("target_modules", ["q_proj", "v_proj"]),
+                target_modules=target_modules,
                 lora_dropout=llm_lora.get("dropout", 0.05),
                 bias="none",
             )

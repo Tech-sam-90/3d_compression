@@ -162,6 +162,7 @@ def _validate(
     cls_loss_weight: float = 0.3,
     bce_loss_fn: Optional[torch.nn.Module] = None,
     max_batches: Optional[int] = None,
+    max_length: int = 1024,
 ) -> float:
     model.eval()
     total_loss = 0.0
@@ -185,7 +186,7 @@ def _validate(
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=256,
+                max_length=max_length,
             ).input_ids.to(device)
             out = model(features, instructions, report_tokens=target_enc, training=True)
             loss = out["loss"]
@@ -227,6 +228,9 @@ def main() -> None:
     max_samples = cfg.get("max_samples")
     tasks = cfg.get("tasks", ["T1", "T2", "T3"])
     task_weights = cfg.get("task_weights", {"T1": 0.6, "T2": 0.3, "T3": 0.1})
+    # CT-RATE reports average ~201 tokens, max ~824 (see verification run) —
+    # 256 was silently truncating most reports. Argus Appendix B uses 1024.
+    max_length = cfg.get("max_length", 1024)
 
     logger.info("Loading training dataset from %s", cfg["features_train_dir"])
     train_ds = CTCLIPFeatureDataset(
@@ -463,7 +467,7 @@ def main() -> None:
                         return_tensors="pt",
                         padding=True,
                         truncation=True,
-                        max_length=256,
+                        max_length=max_length,
                     ).input_ids.to(device)
                     out = model(
                         features, instructions, report_tokens=target_enc, training=True
@@ -506,6 +510,7 @@ def main() -> None:
                         model, val_loader, device,
                         stage=stage, cls_loss_weight=cls_loss_weight,
                         bce_loss_fn=bce_loss_fn, max_batches=50,
+                        max_length=max_length,
                     )
                     logger.info(
                         "  [val] step=%d  val_loss=%.4f  best=%.4f",

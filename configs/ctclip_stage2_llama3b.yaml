@@ -46,6 +46,9 @@ instruction_encoder_model: meta-llama/Llama-3.2-3B-Instruct
 # Training
 device: cuda
 mixed_precision: true
+# CT-RATE reports avg ~201 tokens, max ~824 — 256 was silently truncating
+# most reports. Argus Appendix B uses 1024.
+max_length: 1024
 num_epochs: 5
 # MEMORY RISK: this loads Llama-3.2-3B-Instruct TWICE (main LLM +
 # instruction encoder), both in fp32 (~12.8GB each = ~25.7GB static weights
