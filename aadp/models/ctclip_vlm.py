@@ -130,6 +130,21 @@ class CTCLIPStage2VLM(nn.Module):
         # requires grad — the usual frozen-embedding gotcha doesn't apply.
         self.llm.gradient_checkpointing_enable()
         llm_hidden: int = self.llm.config.hidden_size
+        # GPT-2-family models (BioMedLM included) have a FIXED positional
+        # embedding table — n_positions/max_position_embeddings — and
+        # indexing past it is a CUDA device-side assert (gather kernel
+        # index out of bounds), not a graceful error. visual+instruction+
+        # report tokens are concatenated before hitting the LLM, so a
+        # report max_length sized for the LLM alone isn't safe once M and
+        # L_inst are added on top (confirmed root cause of job 66397199's
+        # crash at step ~125: BioMedLM's n_positions=1024, and
+        # M+L_inst+L_rep reached ~1216). forward() clamps defensively
+        # using this so it's safe regardless of num_tokens (M varies 16-512
+        # across VTCB sweep configs) or instruction length.
+        self._max_seq_len = (
+            getattr(self.llm.config, "n_positions", None)
+            or getattr(self.llm.config, "max_position_embeddings", None)
+        )
 
         if llm_lora is not None and llm_lora.get("enabled", False):
             from peft import LoraConfig, TaskType, get_peft_model
@@ -258,6 +273,19 @@ class CTCLIPStage2VLM(nn.Module):
             report_tokens = report_tokens.to(device)             # (B, L_rep)
             rep_embeds = embed_fn(report_tokens).float()         # (B, L_rep, llm_hidden)
             L_rep = rep_embeds.shape[1]
+
+            # Defensive clamp: visual (M) + instruction (L_inst) + report
+            # (L_rep) must not exceed the LLM's positional embedding table
+            # size, or the position lookup indexes out of bounds (CUDA
+            # device-side assert). Truncate the report's TAIL only — visual
+            # and instruction tokens are never dropped.
+            if self._max_seq_len is not None:
+                total_len = M + L_inst + L_rep
+                if total_len > self._max_seq_len:
+                    keep_rep = max(self._max_seq_len - M - L_inst, 0)
+                    rep_embeds = rep_embeds[:, :keep_rep, :]
+                    report_tokens = report_tokens[:, :keep_rep]
+                    L_rep = keep_rep
 
             inputs_embeds = torch.cat([visual, inst_embeds, rep_embeds], dim=1)
             # (B, M + L_inst + L_rep, llm_hidden)

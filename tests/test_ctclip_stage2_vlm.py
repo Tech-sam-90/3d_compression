@@ -172,6 +172,27 @@ def test_vlm_rebuild_at_budget(vlm):
     vlm.rebuild_at_budget(16)
 
 
+def test_vlm_truncates_overlong_sequence_to_position_limit(vlm):
+    """visual + instruction + report must not exceed the LLM's positional
+    embedding table (opt-125m: max_position_embeddings=2048), or the
+    position lookup indexes out of bounds — a CUDA device-side assert on
+    GPU (root cause of job 66397199's crash with BioMedLM's n_positions=
+    1024). Regression test: a deliberately overlong report must be
+    truncated rather than crash.
+    """
+    B = 1
+    features = torch.randn(B, 24, 576, 512)
+    instructions = ["Generate a radiology report for this CT scan."]
+    # num_tokens=16 (M) + short instruction; report alone exceeds 2048.
+    report_tokens = torch.randint(4, 50, (B, 2100))
+
+    out = vlm(features, instructions, report_tokens=report_tokens, training=True)
+    loss = out["loss"]
+    assert not torch.isnan(loss)
+    assert not torch.isinf(loss)
+    assert out["logits"].shape[1] <= vlm._max_seq_len
+
+
 def test_vlm_cond_dim_mismatch_raises():
     """Wrong cond_dim should raise AssertionError at init."""
     from aadp.models.ctclip_vlm import CTCLIPStage2VLM

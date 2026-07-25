@@ -256,13 +256,115 @@ and aged out of the scheduler's dependency table by the time of submission,
 so the dependency was moot). Submitted directly instead:
 
 **Job 66397199** — `train_ictc_stage2.sh` / `configs/ctclip_stage2_final.yaml`
-— currently running.
+— submitted, but crashed ~step 125 (see Change 7 below).
+
+---
+
+## Change 7 — Position-embedding overflow (found after Change 6, mid full run)
+
+Job 66397199 crashed after ~125 steps with `CUDA error: device-side assert
+triggered`. The reported traceback (inside `create_causal_mask`) was a red
+herring — CUDA errors report asynchronously, so the real fault was earlier
+in the log: `vectorized_gather_kernel: ... index out of bounds`.
+
+**Root cause:** BioMedLM (GPT-2 architecture) has a *fixed* positional
+embedding table — `n_positions = max_position_embeddings = 1024` (confirmed
+via `AutoConfig`). The sequence fed to the LLM is
+`visual (M=64 tokens) + instruction (up to 128 tokens) + report (up to 1024
+tokens, after Change 1)` — up to 1216 tokens, which can exceed BioMedLM's
+1024-position limit whenever a sample's report + instruction runs long
+enough. This is a real gap in Change 1's verification: token-length
+verification checked the *report* alone against 1024, never the *combined*
+sequence against the model's actual position limit. The Change 6 smoke test
+(only 200 samples) didn't hit it by chance; the full 47,149-sample run did,
+at ~step 125.
+
+A static config-side reduction (e.g. `max_length: 832`) isn't robust, since
+the VTCB sweep configs vary `num_tokens` (M) up to 512 — a fixed report cap
+could still overflow at larger M. Fixed defensively in
+`aadp/models/ctclip_vlm.py` instead:
+
+- `__init__` now stores `self._max_seq_len` from
+  `self.llm.config.n_positions` (or `max_position_embeddings` as fallback).
+- `forward()`'s training path clamps `M + L_inst + L_rep` to
+  `self._max_seq_len`, truncating the **report's tail only** — visual and
+  instruction tokens are never dropped — before concatenation.
+
+**Verification:** added
+`test_vlm_truncates_overlong_sequence_to_position_limit` to
+`tests/test_ctclip_stage2_vlm.py` (uses the existing `opt-125m` fixture,
+`max_position_embeddings=2048`, feeds a deliberately 2100-token report) —
+confirms a finite, non-NaN loss and that output sequence length never
+exceeds the model's position limit. Full local run of
+`tests/test_ctclip_stage2_vlm.py` (CPU, login node): **13 passed** (340s,
+mostly the new test's O(2048²) attention pass on CPU). Full GPU pytest gate
+(job 66399233, SLURM-reported `FAILED` due to the same pre-existing/
+unrelated `test_training.py` issues documented under Change 6): **378
+passed** (up from 377 — includes the new test), 2 skipped, same 8
+pre-existing failures.
+
+## Full run — retry (job 66399986)
+
+Resubmitted directly (SLURM rejected `--dependency=afterok` on the
+already-completed smoke job). **Completed successfully**: all 3 epochs, all
+4419 steps, **zero NaN** anywhere in the log.
+
+| Step | val_loss | best |
+|---|---|---|
+| 500 | 1.2712 | inf |
+| 1000 | 1.2314 | 1.2712 |
+| 1500 | 1.0546 | 1.2314 |
+| 2000 | 1.0026 | 1.0546 |
+| 2500 | **0.9517** | 1.0026 |
+| 3000 | 1.0558 | 0.9517 |
+| 3500 | 1.0045 | 0.9517 |
+| 4000 | 1.0641 | 0.9517 |
+
+Best checkpoint: step 2500, `val_loss=0.9517`,
+`/scratch/sadeniji/ictc_checkpoints_stage2_final/checkpoint_best.pt`.
+
+## Evaluation (job 66415007)
+
+Ran `scripts/evaluate_checkpoint.py` against the best checkpoint (n=200
+validation samples). Three-way comparison against the two prior runs
+referenced earlier in this project's history:
+
+| Metric | Joint single-stage (prior baseline) | Two-stage, interrupted by NaN (job 66352992) | Two-stage, complete (this run) |
+|---|---|---|---|
+| BLEU-4 | 0.188 | 0.0824 | 0.1517 |
+| METEOR | 0.353 | 0.2516 | 0.3022 |
+| ROUGE-L | 0.322 | 0.2087 | 0.2755 |
+| CIDEr | 0.0269 | 0.00985 | 0.0211 |
+| Avg-NLP | 0.222 | 0.1382 | 0.1876 |
+| GREEN | NaN | NaN | NaN |
+| RaTEScore | 0.813 | 0.7928 | 0.8009 |
+| RadGraph-XL F1 | 0.175 | 0.1219 | 0.1396 |
+
+Completing the full run recovered most of the gap to the joint-training
+baseline (vs. the earlier run that died after ~500 real steps), but every
+metric still falls short of it. More importantly, the **qualitative
+examples still show the same mode-collapse pattern** from the start of this
+effort: predictions for 4 of the first 5 validation examples are nearly
+word-for-word identical boilerplate ("Trachea and both main bronchi are
+open. No occlusive pathology was detected...") despite quite different
+references (one about a thyroid mass, another a hiatal hernia) — consistent
+with the low CIDEr score, which specifically penalizes fluent-but-generic
+text that shares surface n-grams with references by genre convention rather
+than by matching content.
+
+**Bottom line:** every engineering/stability problem from this session
+(NaN collapse, resource sizing, position-embedding overflow) is resolved —
+the run now completes cleanly end-to-end. The underlying mode-collapse
+problem in generation quality is not resolved by the two-stage approach as
+implemented here.
 
 ---
 
 ## Summary of files changed
 
-- `aadp/models/ctclip_vlm.py` — gradient checkpointing, `find_lora_target_modules()`
+- `aadp/models/ctclip_vlm.py` — gradient checkpointing, `find_lora_target_modules()`,
+  defensive position-embedding-overflow truncation
+- `tests/test_ctclip_stage2_vlm.py` — regression test for the truncation fix
 - `scripts/train_ctclip.py` — `max_length` threaded from config
 - `aadp/data/instruction_builder.py` — 41 M3D templates added to `T1_TEMPLATES`
 - `configs/ctclip_stage1.yaml`, `configs/ctclip_stage2_final.yaml` — `max_length`,
