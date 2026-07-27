@@ -46,9 +46,13 @@ class FiLMLayer(nn.Module):
         self.gamma_proj = nn.Linear(cond_dim, target_dim, bias=True)
         self.beta_proj = nn.Linear(cond_dim, target_dim, bias=True)
 
-        # Identity initialisation: γ=1, β=0 at training start
+        # Identity initialisation: γ=1, β=0 at training start. The "+1" for
+        # gamma is an explicit residual added in forward() (not baked into
+        # gamma_proj.bias) so that weight decay on the bias — if ever
+        # enabled — regularizes gamma toward 1 (identity) instead of toward
+        # 0 (zeroing the query). Matches V-FiLM's gamma_v residual form.
         nn.init.zeros_(self.gamma_proj.weight)
-        nn.init.ones_(self.gamma_proj.bias)
+        nn.init.zeros_(self.gamma_proj.bias)
         nn.init.zeros_(self.beta_proj.weight)
         nn.init.zeros_(self.beta_proj.bias)
 
@@ -64,8 +68,8 @@ class FiLMLayer(nn.Module):
         Returns:
             ``(B, M, target_dim)`` — modulated queries.
         """
-        gamma = self.gamma_proj(cond).unsqueeze(1)  # (B, 1, target_dim)
-        beta = self.beta_proj(cond).unsqueeze(1)    # (B, 1, target_dim)
+        gamma = 1.0 + self.gamma_proj(cond).unsqueeze(1)  # (B, 1, target_dim)
+        beta = self.beta_proj(cond).unsqueeze(1)          # (B, 1, target_dim)
         return x * gamma + beta
 
 

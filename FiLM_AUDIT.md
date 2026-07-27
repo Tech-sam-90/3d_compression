@@ -140,3 +140,32 @@ Ordered by likely impact on the mode-collapse / instruction-signal problem. Only
 
 1. **Check 3 (PARTIAL) — cosine-attention's `F.normalize(Qh, dim=-1)` runs after Q-FiLM and discards any purely-magnitude-based signal γ encodes.** Likely low-to-moderate impact given `gamma_proj` is per-channel (direction survives), but it is the one place in the pipeline where a normalization sits downstream of FiLM on the query path, which is exactly the pattern the reference architecture avoids by applying FiLM after normalization instead of before. If cross-attention still under-differentiates by instruction after the V-FiLM fix's full training results are confirmed, this is the next place to look — e.g. by testing whether making `gamma_proj`'s output a scalar-per-batch (rather than diagonal) changes anything, which would confirm whether direction-only conditioning is carrying enough signal on its own.
 2. **Check 1 (PASS with caveat) — not a current bug, but a latent one.** If `weight_decay` is ever set above `0.0` in a future config without excluding `gamma_proj.bias`/`beta_proj.bias` (and now `gamma_v_proj`/`beta_v_proj`'s biases too, for consistency) from decay, Q-FiLM's γ would regularize toward 0 (killing the query) instead of toward 1 (identity), unlike V-FiLM's explicit-residual form which decays safely toward identity. Cheap preventative fix: switch `FiLMLayer.forward` to the explicit `gamma = 1.0 + self.gamma_proj(cond)` form (bias init 0) to match V-FiLM's already-correct pattern, removing the dependency on `weight_decay=0.0` staying true forever.
+
+---
+
+## Fix Application — 2026-07-27
+
+Both priority fixes above were applied.
+
+**Fix 1 (`aadp/models/film.py`):** `gamma_proj.bias` init changed from `nn.init.ones_` to `nn.init.zeros_`; `forward()` changed from `gamma = self.gamma_proj(cond)` to `gamma = 1.0 + self.gamma_proj(cond)` — an explicit residual, matching V-FiLM's already-correct form and removing the weight-decay-direction dependency flagged in Priority Fix 2. `beta_proj` untouched (zero-init, no residual — correct as-is).
+
+**Fix 2 (`aadp/models/projector/stage2.py`):** Q-FiLM moved from before Q's linear projection to after the cosine-attention L2-normalize. `q = self.film(q, etext)` was removed from its original spot (right after `depth_queries` expansion); `self.film` is now called on `Qh` reshaped back to `(B, M, C)` immediately after `F.normalize(Qh, dim=-1)`, then reshaped back to `(B, H, M, hd)` before score computation. No new `__init__` parameters — `head_dim`/`C` are derived from existing tensor shapes and `self._num_heads`/`self._embed_dim`. Class docstring and the stray `# Step 8` comment (now `# Step 7`, since the old Q-FiLM step was removed) were updated to match.
+
+### Verification
+
+- **Test suite** (`verify_two_stage.sh`, job 66488365): 378 passed / 2 skipped / same 8 pre-existing `test_training.py` failures (HF-Hub-offline network errors in that suite, unrelated to `film.py`/`stage2.py`) — **zero new regressions**, consistent with every prior verification run this session.
+- **Test 3 rerun** (`scratch_test3_rerun5_filmfix.py`, job 66488412, same `STAGE1_CKPT` used in Reruns 2/3, step=1500, val_loss=0.4462):
+
+  | Check | Result |
+  |---|---|
+  | (a) No NaN/Inf, no shape errors | **Pass** — `assert torch.isfinite(...)` on projector output and attention scores held for Parts A and B |
+  | (b) FiLM is live (post-fix) | **Pass** — `gamma_q` = 1.3220 (instr. 1) / 1.2973 (instr. 2), `beta_q` = -1.5472 / -1.1982 — clearly ≠ 1.0/0.0 and differ between instructions, confirming `self.film` is being called and producing non-identity, instruction-dependent output at its new location |
+  | (c) Cosine not worse than prior (~0.992790) | **Pass, and improved** — Part A mean cosine 0.992790 → **0.913100** (Δ = -0.0797) |
+
+  Part B (scan sensitivity, same checkpoint, comparable to Test 3 Rerun 2's 0.9411 on this checkpoint): 0.9411 → **0.679882** — also moved in the more-differentiated direction, not worse.
+
+### Important caveat on interpreting the improvement
+
+The checkpoint used (`STAGE1_CKPT`, step=1500) predates both fixes, so this is a pre-training snapshot, not a retrained result — same caveat as V-FiLM's static-checkpoint results in Rerun 3. Critically, **this checkpoint's `gamma_proj.bias` loaded at 0.999551** (logged directly: "Checkpoint's raw stage2.film.gamma_proj.bias mean (pre-fix semantics): 0.9995505..."). Under the *old* semantics that value directly *was* the identity point (`gamma = bias + W@cond ≈ 1 + W@cond`). Under the *new* semantics the same loaded bias now sits underneath an explicit `+1.0` (`gamma = 1.0 + bias + W@cond ≈ 2.0 + W@cond`) — a real ~+1 upward shift in γ for any checkpoint saved before this fix, not something the model "learned." Some (possibly most) of the cosine improvement seen above is very likely this one-time semantic shift making γ deviate further from a literal `1.0` on this specific old checkpoint, rather than evidence that Fix 2's reordering makes the mechanism more instruction-sensitive in general. This is exactly the kind of confound the fix-application task doesn't ask to resolve (no gate recheck was requested, correctly — neither fix adds trainable capacity), but it means **these numbers should not be read as a new gate-passing result**, and any future checkpoint warm-started from a pre-fix save will see this same one-time γ shift on first load. A clean re-measurement would require a checkpoint trained from scratch under the new semantics, which is out of scope here.
+
+No further action taken (no training run triggered) — this was verification-only, per the task's explicit instruction to confirm correctness, not to recheck the gate.

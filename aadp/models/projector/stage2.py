@@ -20,8 +20,10 @@ from aadp.models.projector.pos_encoding import LearnableDepthEnc1D
 class InterSliceAggregator(nn.Module):
     """Cross-attention aggregator that collapses D×K slice latents to M tokens.
 
-    Learnable depth queries Qd (shape M×C) are first FiLM-modulated by the
-    instruction embedding ``etext``, then attend over the full D×K latent
+    Learnable depth queries Qd (shape M×C) are projected and L2-normalized
+    (cosine attention), then FiLM-modulated by the instruction embedding
+    ``etext`` (FiLM after normalize, matching the reference FiLM design —
+    see FiLM_AUDIT.md Check 3), before attending over the full D×K latent
     sequence.  Attention weights (stored after each forward pass) expose
     per-slice attention mass for metric computation.
 
@@ -181,13 +183,10 @@ class InterSliceAggregator(nn.Module):
         # Step 5: expand depth queries to batch
         q = self.depth_queries.unsqueeze(0).expand(B, -1, -1)  # (B, M, C)
 
-        # Step 6: FiLM-modulate queries with instruction embedding
-        q = self.film(q, etext)                    # (B, M, C)
-
-        # Step 7: pre-norm (kv only — see __init__ comment on norm_q removal)
+        # Step 6: pre-norm (kv only — see __init__ comment on norm_q removal)
         kv = self.norm_kv(kv)
 
-        # Step 8: top-K sparse cross-attention (see __init__'s top_k docstring
+        # Step 7: top-K sparse cross-attention (see __init__'s top_k docstring
         # for why full softmax attention collapsed FiLM's instruction signal).
         # Manual QKV split reusing nn.MultiheadAttention's own parameters —
         # not its forward() — so a top-K mask can be applied to the scores
@@ -231,12 +230,27 @@ class InterSliceAggregator(nn.Module):
         Qh = F.normalize(Qh + 1e-8, dim=-1)
         Kh = F.normalize(Kh, dim=-1)
 
+        # Q-FiLM (FiLM_AUDIT.md Check 3 fix): apply FiLM AFTER normalizing Q,
+        # not before, matching the reference (FiLM applied after batch norm).
+        # Applying it before let the normalize discard gamma's purely
+        # magnitude-based signal, keeping only its directional effect.
+        # Reshape the normalized heads back to (B, M, C) for the FiLM
+        # projection, then split back into heads for score computation.
+        Qh_flat = Qh.transpose(1, 2).reshape(B, self._num_tokens, self._embed_dim)  # (B, M, C)
+        Qh_flat = self.film(Qh_flat, etext)                                          # (B, M, C)
+        Qh = Qh_flat.view(B, self._num_tokens, self._num_heads, head_dim).transpose(1, 2)  # (B,H,M,hd)
+
+        if os.environ.get("ICTC_DEBUG_ATTN"):
+            gamma_q = 1.0 + self.film.gamma_proj(etext)
+            beta_q = self.film.beta_proj(etext)
+            print(f"[DEBUG] gamma_q mean: {gamma_q[0].mean():.4f}, beta_q mean: {beta_q[0].mean():.4f}")
+            print(f"[DEBUG] Q norm after FiLM: {Qh.norm(dim=-1).mean():.4f}")
+            print(f"[DEBUG] K norm after normalize: {Kh.norm(dim=-1).mean():.4f}")
+
         tau = self.attn_temperature.clamp(min=1e-4)
         scores = (Qh @ Kh.transpose(-2, -1)) / tau   # (B,H,M,N) — cosine sim / temperature
 
         if os.environ.get("ICTC_DEBUG_ATTN"):
-            print(f"[DEBUG] Q norm after normalize: {Qh.norm(dim=-1).mean():.4f}")
-            print(f"[DEBUG] K norm after normalize: {Kh.norm(dim=-1).mean():.4f}")
             print(f"[DEBUG] score std: {scores.std():.4f}, range: [{scores.min():.1f}, {scores.max():.1f}]")
 
         # NaN guard: top_k must never exceed N (masking every position of a
