@@ -15,6 +15,9 @@ from typing import Dict, Optional, Union
 import torch
 import torch.nn as nn
 
+from aadp.ablations.attention_conditioned_ctclip_stage2 import (
+    AttentionConditionedInterSliceAggregator,
+)
 from aadp.models.projector.stage2 import InterSliceAggregator
 
 # Fixed CT-CLIP spatial constants
@@ -29,16 +32,25 @@ class CTCLIPStage2Projector(nn.Module):
     per slice, feeding directly into InterSliceAggregator.
 
     Args:
-        ctclip_dim:  Channel dim of CT-CLIP features (default 512).
-        embed_dim:   Working dimension inside Stage 2. If equal to ctclip_dim,
-                     input_proj is nn.Identity. Default 512.
-        num_tokens:  M — number of output tokens for the LLM. Default 64.
-        num_heads:   Attention heads in Stage 2. Default 8.
-        cond_dim:    Instruction encoder output dimension. Default 2048.
-        dropout:     Attention dropout. Default 0.0.
-        use_film:    FiLM conditioning in Stage 2. Default True.
-        max_depth:   Max depth passed to LearnableDepthEnc1D. Default 24.
-        device:      Target device. Default "cuda".
+        ctclip_dim:    Channel dim of CT-CLIP features (default 512).
+        embed_dim:     Working dimension inside Stage 2. If equal to
+                       ctclip_dim, input_proj is nn.Identity. Default 512.
+        num_tokens:    M — number of output tokens for the LLM. Default 64.
+        num_heads:     Attention heads in Stage 2. Default 8.
+        cond_dim:      Instruction encoder output dimension. Default 2048.
+        dropout:       Attention dropout. Default 0.0.
+        use_film:      FiLM conditioning in Stage 2, only used when
+                       ``conditioning="film"``. Default True.
+        max_depth:     Max depth passed to LearnableDepthEnc1D. Default 24.
+        conditioning:  ``"film"`` (default) uses InterSliceAggregator's FiLM
+                       conditioning; ``"attention"`` uses
+                       AttentionConditionedInterSliceAggregator, which
+                       replaces FiLM entirely with a second cross-attention
+                       operation over the instruction embedding (see
+                       aadp/ablations/attention_conditioned_ctclip_stage2.py).
+                       Both share the identical top-K sparse + cosine visual
+                       cross-attention mechanism.
+        device:        Target device. Default "cuda".
     """
 
     def __init__(
@@ -52,41 +64,67 @@ class CTCLIPStage2Projector(nn.Module):
         use_film: bool = True,
         max_depth: int = 24,
         top_k: int = 128,
+        conditioning: str = "film",
         device: Union[torch.device, str] = "cuda",
     ) -> None:
         super().__init__()
 
+        if conditioning not in ("film", "attention"):
+            raise ValueError(
+                f"conditioning must be 'film' or 'attention', got {conditioning!r}"
+            )
+
         self._ctclip_dim = ctclip_dim
         self._embed_dim = embed_dim
+        self._conditioning = conditioning
 
         if ctclip_dim != embed_dim:
             self.input_proj: nn.Module = nn.Linear(ctclip_dim, embed_dim)
         else:
             self.input_proj = nn.Identity()
 
-        self.stage2 = InterSliceAggregator(
-            embed_dim=embed_dim,
-            num_tokens=num_tokens,
-            num_heads=num_heads,
-            cond_dim=cond_dim,
-            dropout=dropout,
-            use_film=use_film,
-            max_depth=max_depth,
-            top_k=top_k,
-            device=device,
-        )
-
-        # Store stage2 init kwargs so rebuild_at_budget can reinstantiate
-        self._stage2_kwargs: Dict = dict(
-            embed_dim=embed_dim,
-            num_heads=num_heads,
-            cond_dim=cond_dim,
-            dropout=dropout,
-            use_film=use_film,
-            max_depth=max_depth,
-            top_k=top_k,
-            device=str(device),
-        )
+        if conditioning == "attention":
+            self.stage2: nn.Module = AttentionConditionedInterSliceAggregator(
+                embed_dim=embed_dim,
+                num_tokens=num_tokens,
+                num_heads=num_heads,
+                cond_dim=cond_dim,
+                dropout=dropout,
+                max_depth=max_depth,
+                top_k=top_k,
+                device=device,
+            )
+            self._stage2_kwargs: Dict = dict(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                cond_dim=cond_dim,
+                dropout=dropout,
+                max_depth=max_depth,
+                top_k=top_k,
+                device=str(device),
+            )
+        else:
+            self.stage2 = InterSliceAggregator(
+                embed_dim=embed_dim,
+                num_tokens=num_tokens,
+                num_heads=num_heads,
+                cond_dim=cond_dim,
+                dropout=dropout,
+                use_film=use_film,
+                max_depth=max_depth,
+                top_k=top_k,
+                device=device,
+            )
+            self._stage2_kwargs = dict(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                cond_dim=cond_dim,
+                dropout=dropout,
+                use_film=use_film,
+                max_depth=max_depth,
+                top_k=top_k,
+                device=str(device),
+            )
 
         self.to(torch.device(device))
 
@@ -120,17 +158,23 @@ class CTCLIPStage2Projector(nn.Module):
     # ── Budget sweep ──────────────────────────────────────────────────────────
 
     def rebuild_at_budget(self, M: int) -> None:
-        """Replace Stage 2 with a fresh InterSliceAggregator at token budget M.
+        """Replace Stage 2 with a fresh aggregator at token budget M.
 
         No weights are copied — this is for VTCB budget sweeps where the
-        Stage 2 head is re-initialised at each M.
+        Stage 2 head is re-initialised at each M. Uses whichever aggregator
+        class this projector was built with (``conditioning``).
 
         Args:
             M: New number of LLM output tokens.
         """
         device = next(self.parameters()).device
         kwargs = {**self._stage2_kwargs, "num_tokens": M, "device": str(device)}
-        self.stage2 = InterSliceAggregator(**kwargs)
+        stage2_cls = (
+            AttentionConditionedInterSliceAggregator
+            if self._conditioning == "attention"
+            else InterSliceAggregator
+        )
+        self.stage2 = stage2_cls(**kwargs)
         self._stage2_kwargs["num_tokens"] = M
 
     def get_slice_attention(self) -> Optional[torch.Tensor]:

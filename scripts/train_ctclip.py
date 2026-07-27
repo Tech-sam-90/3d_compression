@@ -142,6 +142,15 @@ def _warm_start_weights(path: str, model, device: str) -> None:
     beta_v_proj) that don't exist in checkpoints saved before those fixes.
     These are expected-missing (correctly initialized fresh, per each
     fix's own init scheme) — anything else missing is a real error.
+
+    Also covers warm-starting the attention-conditioned ablation
+    (conditioning="attention", AttentionConditionedInterSliceAggregator)
+    from a FiLM-based checkpoint: cross_attn/depth_queries/depth_pos_enc/
+    norm_kv/attn_temperature are shared by both aggregator classes and
+    transfer correctly, but text_proj/cond_cross_attn/norm_q/norm_text are
+    genuinely new (expected-missing, fresh init) while the old checkpoint's
+    film.*/gamma_v_proj.*/beta_v_proj.* keys become unexpected (already
+    tolerated below — the attention-conditioned model has no FiLM at all).
     """
     ckpt = torch.load(path, map_location=device)
     result = model.projector.load_state_dict(ckpt["projector"], strict=False)
@@ -149,6 +158,11 @@ def _warm_start_weights(path: str, model, device: str) -> None:
         "attn_temperature",
         "gamma_v_proj.weight", "gamma_v_proj.bias",
         "beta_v_proj.weight", "beta_v_proj.bias",
+        "text_proj.weight", "text_proj.bias",
+        "cond_cross_attn.in_proj_weight", "cond_cross_attn.in_proj_bias",
+        "cond_cross_attn.out_proj.weight", "cond_cross_attn.out_proj.bias",
+        "norm_q.weight", "norm_q.bias",
+        "norm_text.weight", "norm_text.bias",
     ]
     real_missing = [
         k for k in result.missing_keys
@@ -327,6 +341,7 @@ def main() -> None:
         max_depth=cfg.get("max_depth", 24),
         dropout=cfg.get("dropout", 0.0),
         top_k=cfg.get("aggregator_top_k", 128),
+        conditioning=cfg.get("aggregator_conditioning", "film"),
         llm_model_name=cfg.get("llm_model_name", "facebook/opt-1.3b"),
         llm_frozen=cfg.get("llm_frozen", False),
         llm_lora=cfg.get("llm_lora"),

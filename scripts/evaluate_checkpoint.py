@@ -86,6 +86,8 @@ def main() -> None:
         use_film=cfg.get("use_film", True),
         max_depth=cfg.get("max_depth", 24),
         dropout=cfg.get("dropout", 0.0),
+        top_k=cfg.get("aggregator_top_k", 128),
+        conditioning=cfg.get("aggregator_conditioning", "film"),
         llm_model_name=cfg.get("llm_model_name", "facebook/opt-1.3b"),
         llm_frozen=cfg.get("llm_frozen", False),
         llm_lora=cfg.get("llm_lora"),

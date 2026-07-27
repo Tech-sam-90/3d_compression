@@ -61,11 +61,14 @@ class CTCLIPStage2VLM(nn.Module):
         num_tokens:               M — LLM token budget (default 64).
         num_heads:                Stage 2 attention heads (default 8).
         cond_dim:                 Instruction encoder output dim (default 2048).
-        use_film:                 FiLM conditioning in Stage 2. Default True.
+        use_film:                 FiLM conditioning in Stage 2, only used when
+                                   conditioning="film". Default True.
         max_depth:                Max depth for LearnableDepthEnc1D. Default 24.
         dropout:                  Stage 2 dropout. Default 0.0.
         top_k:                    Sparse cross-attention top-K (see
                                    InterSliceAggregator's docstring). Default 128.
+        conditioning:              "film" (default) or "attention" — see
+                                   CTCLIPStage2Projector's docstring.
         llm_model_name:           HF model ID. Default "facebook/opt-1.3b".
         llm_frozen:               Freeze base LLM (ignored when LoRA enabled).
         llm_lora:                 LoRA config dict or None.
@@ -84,6 +87,7 @@ class CTCLIPStage2VLM(nn.Module):
         max_depth: int = 24,
         dropout: float = 0.0,
         top_k: int = 128,
+        conditioning: str = "film",
         llm_model_name: str = "facebook/opt-1.3b",
         llm_frozen: bool = False,
         llm_lora: Optional[Dict] = None,
@@ -119,6 +123,7 @@ class CTCLIPStage2VLM(nn.Module):
             use_film=use_film,
             max_depth=max_depth,
             top_k=top_k,
+            conditioning=conditioning,
             device=device,
         )
 

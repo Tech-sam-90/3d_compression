@@ -1,0 +1,89 @@
+experiment_name: narval_smoke_attention_cond
+projector: ctclip_stage2
+
+# CT-CLIP feature dimensions (fixed — do not change)
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+# Stage 2 architecture
+embed_dim: 512
+num_tokens: 64
+num_heads: 8
+cond_dim: 2560
+dropout: 0.0
+aggregator_top_k: 128   # sparse cross-attention fix — see docs/DIAGNOSTIC_REPORT.md
+
+# Attention-conditioned ablation: replaces FiLM entirely (both Q-FiLM and
+# V-FiLM) with a second cross-attention operation over the instruction
+# embedding — see aadp/ablations/attention_conditioned_ctclip_stage2.py.
+# The visual cross-attention (top-K sparse + cosine, aggregator_top_k above)
+# is unchanged from the FiLM pipeline, so this isolates the
+# FiLM-vs-attention conditioning question from the separately-diagnosed
+# CT-CLIP feature-homogeneity collapse (docs/DIAGNOSTIC_REPORT.md).
+aggregator_conditioning: attention
+
+# LLM
+llm_model_name: stanford-crfm/BioMedLM
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  target_modules: ["c_attn", "c_proj"]   # unused now — find_lora_target_modules() auto-discovers, falls back to this
+  dropout: 0.05
+
+instruction_encoder_model: stanford-crfm/BioMedLM
+
+# ── Attention-conditioning ablation smoke test ──────────────────────────────
+# Same revised hyperparameters as configs/ctclip_stage2_final.yaml (job
+# 66352992 NaN post-mortem). Gates the full run: watch for NaN before
+# submitting the full training config. resume_from points at the same
+# Stage 1 (FiLM-based) checkpoint as the FiLM pipeline — _warm_start_weights
+# in scripts/train_ctclip.py transfers the shared submodules (cross_attn,
+# depth_queries, depth_pos_enc, norm_kv, attn_temperature, visual_proj,
+# cls_head, LoRA) and fresh-initializes only the new conditioning submodules
+# (text_proj, cond_cross_attn, norm_q, norm_text); the checkpoint's FiLM
+# params (film.*, gamma_v_proj.*, beta_v_proj.*) are dropped as unexpected.
+stage: 2
+num_labels: 18
+resume_from: /scratch/sadeniji/ictc_checkpoints_stage1/checkpoint_best.pt
+
+# Training
+device: cuda
+mixed_precision: true
+max_length: 1024
+max_samples: 200
+num_epochs: 2
+batch_size: 1
+gradient_accumulation_steps: 1
+max_grad_norm: 0.5
+aggregator_learning_rate: 2.0e-4
+learning_rate: 1.0e-5
+cls_loss_weight: 0.1
+weight_decay: 0.0
+warmup_ratio: 0.05
+val_every_n_steps: 50
+save_every_n_steps: 100
+checkpoint_dir: /scratch/sadeniji/smoke_checkpoints_attention_cond
+patience: 99
+use_wandb: false
+
+use_attn_loss: false
+
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+
+hf_token: null
+
+# VTCB sweep values (used by scripts/vtcb_sweep_ctclip.py)
+vtcb_budgets: [16, 32, 64, 128, 256, 512]
