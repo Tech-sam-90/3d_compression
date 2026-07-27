@@ -10,6 +10,37 @@ budget adaptively — attending to the chest when asked about nodules, to the ab
 when asked about liver lesions — without any additional supervision beyond the
 report-generation objective.
 
+## Repository layout
+
+```
+3d_compression/
+├── aadp/                 Model code — Stage 1/2 projectors, FiLM, VLM wrapper,
+│                         data loading, training loop, evaluation metrics
+│   ├── data/             Datasets, instruction encoder/builder
+│   ├── models/           ctclip_vlm.py, vlm.py, film.py, encoder/, projector/
+│   ├── training/         Trainer, losses, scheduler
+│   ├── evaluation/       Metrics, benchmarks, probes
+│   ├── ablations/        A1 / attention-conditioning / aux-loss ablation variants
+│   ├── baselines/        Perceiver and MedPruner baseline projectors
+│   └── visualization/    Attention maps, compression curves
+├── configs/              All training/eval YAML configs (base, ablations,
+│                         baselines, CT-CLIP stage 1/2, Narval smoke tests)
+├── scripts/              Runnable entry points
+│   ├── train.py / train_ctclip.py, evaluate.py / evaluate_checkpoint.py
+│   ├── preprocess_ctrate.py, cache_all_models.py, build_metrics_container.sh
+│   ├── smoke_test_*.sh, train_ictc*.sh, verify_*.sh, vtcb_sweep.sh   (SLURM launchers)
+│   └── diagnostics/      One-off diagnostic drivers + their SLURM wrappers,
+│                         kept for reproducing findings cited in docs/
+├── tests/                Pytest suite
+├── docs/                 CHANGES.md, DIAGNOSTIC_REPORT.md, execution_plan.md,
+│                         FiLM_AUDIT.md — session reports and audit write-ups
+├── notebooks/            colab_smoke_test.ipynb + its companion script
+├── results/              Evaluation output (JSON/plots)
+├── README.md
+├── requirements.txt / environment.yml / setup.py
+└── M3D/                  External reference implementation (gitignored, not part of this project)
+```
+
 ## Installation
 
 ```bash
@@ -23,7 +54,7 @@ Python 3.10+ and PyTorch 2.1+ with CUDA are required.
 
 Training uses the [CT-RATE dataset](https://huggingface.co/datasets/ibrahimhamamci/CT-RATE)
 streamed directly from HuggingFace — no local download is necessary.
-The streaming dataset is implemented in [data/ctrate_dataset.py](data/ctrate_dataset.py).
+The streaming dataset is implemented in [aadp/data/ctrate_dataset.py](aadp/data/ctrate_dataset.py).
 
 ## Training
 
