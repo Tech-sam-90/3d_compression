@@ -17,7 +17,7 @@ dropout: 0.0
 # highly similar across spatial positions (raw pairwise cosine ~0.87), so
 # full softmax over all N=D*K=13,824 keys collapses to ~mean(V) regardless
 # of query, erasing FiLM's instruction-specific modulation before it can
-# matter (post-fix Test 3 rerun in DIAGNOSTIC_REPORT.md). min(128, N//4)=128.
+# matter (post-fix Test 3 rerun in docs/DIAGNOSTIC_REPORT.md). min(128, N//4)=128.
 aggregator_top_k: 128
 
 # LLM — built and loaded (needed so Stage 2 can warm-start from this

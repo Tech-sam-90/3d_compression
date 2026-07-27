@@ -19,7 +19,7 @@ hf_hub_download / nltk.download / hardcoded model-name strings):
     scripts/train_ctclip.py), StanfordAIMI/RadBERT (bert_score fallback
     backend in aadp/evaluation/metrics/ratescore.py).
   - NLTK data: punkt, punkt_tab, wordnet, omw-1.4 (BLEU/METEOR scoring in
-    scripts/vtcb_sweep_ctclip.py, colab_smoke_test.py).
+    scripts/vtcb_sweep_ctclip.py, notebooks/colab_smoke_test.py).
   - Evaluation-metric model downloads (radgraph, ratescore, bert_score) —
     only triggered if those optional packages are installed; this script
     does not install them. If missing, it prints the pip install command

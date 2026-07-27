@@ -20,4 +20,4 @@ export TRANSFORMERS_CACHE=/project/def-uanazodo-ab/sadeniji/hf_cache
 export HF_DATASETS_CACHE=/project/def-uanazodo-ab/sadeniji/hf_cache
 
 cd ~/3d_compression
-python3 scratch_test3_rerun5_filmfix.py
+python3 scripts/diagnostics/scratch_test3_rerun5_filmfix.py

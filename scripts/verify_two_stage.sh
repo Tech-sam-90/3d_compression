@@ -22,7 +22,7 @@ cd ~/3d_compression
 # Full suite: the two-stage training changes touch CTCLIPStage2VLM.forward()
 # (new cls_head + compute_lm gate) and train_ctclip.py broadly, not just the
 # stage2 projector, so a targeted subset isn't enough this time.
-# (colab_smoke_test.py at repo root is a standalone Colab script, not a test
+# (notebooks/colab_smoke_test.py is a standalone Colab script, not a test
 # module — asserts at import time if collected from the repo root, so scope
 # to tests/ explicitly rather than bare `pytest`.)
 pytest tests/ -v

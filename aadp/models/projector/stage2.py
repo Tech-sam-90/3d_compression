@@ -23,7 +23,7 @@ class InterSliceAggregator(nn.Module):
     Learnable depth queries Qd (shape M×C) are projected and L2-normalized
     (cosine attention), then FiLM-modulated by the instruction embedding
     ``etext`` (FiLM after normalize, matching the reference FiLM design —
-    see FiLM_AUDIT.md Check 3), before attending over the full D×K latent
+    see docs/FiLM_AUDIT.md Check 3), before attending over the full D×K latent
     sequence.  Attention weights (stored after each forward pass) expose
     per-slice attention mass for metric computation.
 
@@ -41,7 +41,7 @@ class InterSliceAggregator(nn.Module):
                      forward time. Default 128 — chosen for this project's
                      actual CT-CLIP configuration (D=24, K=576 → N=13,824;
                      min(128, N//4)=128). Diagnostic finding (see
-                     DIAGNOSTIC_REPORT.md, "Test 3 Rerun"): CT-CLIP features
+                     docs/DIAGNOSTIC_REPORT.md, "Test 3 Rerun"): CT-CLIP features
                      are highly similar across spatial positions (raw pairwise
                      cosine ~0.87), so full softmax over all N keys produces a
                      near-uniform attention map regardless of query — the
@@ -82,7 +82,7 @@ class InterSliceAggregator(nn.Module):
         self._num_heads = num_heads
         self.top_k = top_k
 
-        # Cosine attention fix (DIAGNOSTIC_REPORT.md, "Test 3 Rerun 2"): top-K
+        # Cosine attention fix (docs/DIAGNOSTIC_REPORT.md, "Test 3 Rerun 2"): top-K
         # sparse attention alone didn't help because QK^T score ranking was
         # dominated by K's own magnitude structure (CT-CLIP features are
         # homogeneous in direction but not in norm), not by query-key
@@ -94,7 +94,7 @@ class InterSliceAggregator(nn.Module):
         # away |Q| and |K| removes.
         self.attn_temperature = nn.Parameter(torch.tensor(0.07))
 
-        # V-FiLM fix (DIAGNOSTIC_REPORT.md, "Test 3 Rerun 3"): cosine
+        # V-FiLM fix (docs/DIAGNOSTIC_REPORT.md, "Test 3 Rerun 3"): cosine
         # attention fixed WHICH positions get selected (top-K overlap
         # 95%→75%) but not the fact that the VALUES being aggregated are
         # themselves homogeneous (CT-CLIP raw feature cosine ~0.87) — a
@@ -230,7 +230,7 @@ class InterSliceAggregator(nn.Module):
         Qh = F.normalize(Qh + 1e-8, dim=-1)
         Kh = F.normalize(Kh, dim=-1)
 
-        # Q-FiLM (FiLM_AUDIT.md Check 3 fix): apply FiLM AFTER normalizing Q,
+        # Q-FiLM (docs/FiLM_AUDIT.md Check 3 fix): apply FiLM AFTER normalizing Q,
         # not before, matching the reference (FiLM applied after batch norm).
         # Applying it before let the normalize discard gamma's purely
         # magnitude-based signal, keeping only its directional effect.

@@ -22,14 +22,14 @@ export HF_DATASETS_CACHE=/project/def-uanazodo-ab/sadeniji/hf_cache
 cd ~/3d_compression
 
 echo "=== Test 6 vs joint single-stage baseline checkpoint ==="
-python3 scratch_diagnostic_test6.py \
+python3 scripts/diagnostics/scratch_diagnostic_test6.py \
   /scratch/sadeniji/ictc_checkpoints/checkpoint_best.pt \
   joint_baseline \
   configs/ctclip_stage2.yaml
 
 echo ""
 echo "=== Test 6 vs two-stage final checkpoint (this session's result) ==="
-python3 scratch_diagnostic_test6.py \
+python3 scripts/diagnostics/scratch_diagnostic_test6.py \
   /scratch/sadeniji/ictc_checkpoints_stage2_final/checkpoint_best.pt \
   two_stage_final \
   configs/ctclip_stage2_final.yaml
