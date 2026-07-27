@@ -13,6 +13,7 @@ num_heads: 8
 cond_dim: 2560
 use_film: true
 dropout: 0.0
+aggregator_top_k: 128   # sparse cross-attention fix — see DIAGNOSTIC_REPORT.md
 
 # LLM
 llm_model_name: stanford-crfm/BioMedLM

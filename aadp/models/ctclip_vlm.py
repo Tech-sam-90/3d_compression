@@ -64,6 +64,8 @@ class CTCLIPStage2VLM(nn.Module):
         use_film:                 FiLM conditioning in Stage 2. Default True.
         max_depth:                Max depth for LearnableDepthEnc1D. Default 24.
         dropout:                  Stage 2 dropout. Default 0.0.
+        top_k:                    Sparse cross-attention top-K (see
+                                   InterSliceAggregator's docstring). Default 128.
         llm_model_name:           HF model ID. Default "facebook/opt-1.3b".
         llm_frozen:               Freeze base LLM (ignored when LoRA enabled).
         llm_lora:                 LoRA config dict or None.
@@ -81,6 +83,7 @@ class CTCLIPStage2VLM(nn.Module):
         use_film: bool = True,
         max_depth: int = 24,
         dropout: float = 0.0,
+        top_k: int = 128,
         llm_model_name: str = "facebook/opt-1.3b",
         llm_frozen: bool = False,
         llm_lora: Optional[Dict] = None,
@@ -115,6 +118,7 @@ class CTCLIPStage2VLM(nn.Module):
             dropout=dropout,
             use_film=use_film,
             max_depth=max_depth,
+            top_k=top_k,
             device=device,
         )
 

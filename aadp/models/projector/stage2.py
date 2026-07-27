@@ -6,10 +6,12 @@ make the model aware of slice position; FiLM modulation steers which slices
 the M queries attend to based on the clinical instruction.
 """
 
+import os
 from typing import Optional, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from aadp.models.film import FiLMLayer, NullFiLMLayer
 from aadp.models.projector.pos_encoding import LearnableDepthEnc1D
@@ -32,6 +34,25 @@ class InterSliceAggregator(nn.Module):
         use_film:    If True use FiLMLayer; if False use NullFiLMLayer (ablation).
                      Default True.
         max_depth:   Maximum depth passed to LearnableDepthEnc1D. Default 512.
+        top_k:       Number of visual positions each query attends to (sparse
+                     top-K cross-attention), out of N = D*K total positions at
+                     forward time. Default 128 — chosen for this project's
+                     actual CT-CLIP configuration (D=24, K=576 → N=13,824;
+                     min(128, N//4)=128). Diagnostic finding (see
+                     DIAGNOSTIC_REPORT.md, "Test 3 Rerun"): CT-CLIP features
+                     are highly similar across spatial positions (raw pairwise
+                     cosine ~0.87), so full softmax over all N keys produces a
+                     near-uniform attention map regardless of query — the
+                     cross-attention output collapses toward mean(V) for every
+                     query, erasing FiLM's instruction-specific query
+                     modulation before it can matter. Restricting softmax to
+                     each query's top-K positions forces it to commit to a
+                     small, query-specific subset instead of averaging
+                     everything away. If N <= top_k at forward time (e.g. a
+                     different D/K than this default was tuned for), falls
+                     back to standard full-softmax attention for that pass —
+                     mathematically identical to top-K when top_k >= N, and
+                     avoids ever masking every position of a row to -inf.
         device:      Device to place the module on. Default ``"cuda"``.
     """
 
@@ -44,6 +65,7 @@ class InterSliceAggregator(nn.Module):
         dropout: float = 0.0,
         use_film: bool = True,
         max_depth: int = 512,
+        top_k: int = 128,
         device: Union[torch.device, str] = "cuda",
     ) -> None:
         super().__init__()
@@ -55,6 +77,38 @@ class InterSliceAggregator(nn.Module):
 
         self._embed_dim = embed_dim
         self._num_tokens = num_tokens
+        self._num_heads = num_heads
+        self.top_k = top_k
+
+        # Cosine attention fix (DIAGNOSTIC_REPORT.md, "Test 3 Rerun 2"): top-K
+        # sparse attention alone didn't help because QK^T score ranking was
+        # dominated by K's own magnitude structure (CT-CLIP features are
+        # homogeneous in direction but not in norm), not by query-key
+        # directional alignment — so the same "loud" positions won top-K
+        # regardless of instruction. L2-normalizing both Q and K before the
+        # dot product makes scores pure cosine similarity, restoring
+        # direction-dependent (hence instruction-dependent) ranking. A
+        # learnable temperature recovers the scale control that normalizing
+        # away |Q| and |K| removes.
+        self.attn_temperature = nn.Parameter(torch.tensor(0.07))
+
+        # V-FiLM fix (DIAGNOSTIC_REPORT.md, "Test 3 Rerun 3"): cosine
+        # attention fixed WHICH positions get selected (top-K overlap
+        # 95%→75%) but not the fact that the VALUES being aggregated are
+        # themselves homogeneous (CT-CLIP raw feature cosine ~0.87) — a
+        # ~25%-different weighted combination of very-similar vectors still
+        # lands close in vector space regardless of attention weights.
+        # gamma_v_proj/beta_v_proj let the instruction directly modulate
+        # which feature dimensions of V are amplified/shifted, independent
+        # of which positions attention selects. Zero-initialized so
+        # gamma_v=1, beta_v=0 at start of training — identical to no V-FiLM
+        # until the model learns otherwise.
+        self.gamma_v_proj = nn.Linear(cond_dim, embed_dim)
+        self.beta_v_proj = nn.Linear(cond_dim, embed_dim)
+        nn.init.zeros_(self.gamma_v_proj.weight)
+        nn.init.zeros_(self.gamma_v_proj.bias)   # gamma_v = 1.0 + 0 = 1.0 at init
+        nn.init.zeros_(self.beta_v_proj.weight)
+        nn.init.zeros_(self.beta_v_proj.bias)    # beta_v = 0 at init
 
         # Learnable depth queries: (M, C), shared across volumes in a batch
         self.depth_queries = nn.Parameter(torch.empty(num_tokens, embed_dim))
@@ -133,12 +187,83 @@ class InterSliceAggregator(nn.Module):
         # Step 7: pre-norm (kv only — see __init__ comment on norm_q removal)
         kv = self.norm_kv(kv)
 
-        # Step 8: cross-attention with weight capture for metrics
-        out, attn_weights = self.cross_attn(q, kv, kv, need_weights=True)
-        # out: (B, M, C),  attn_weights: (B, M, D*K)
+        # Step 8: top-K sparse cross-attention (see __init__'s top_k docstring
+        # for why full softmax attention collapsed FiLM's instruction signal).
+        # Manual QKV split reusing nn.MultiheadAttention's own parameters —
+        # not its forward() — so a top-K mask can be applied to the scores
+        # before softmax (nn.MultiheadAttention has no clean hook for this),
+        # while checkpoint state_dict keys/shapes stay byte-identical to the
+        # previous full-attention version.
+        N = kv.shape[1]
+        head_dim = self._embed_dim // self._num_heads
+
+        in_proj_weight = self.cross_attn.in_proj_weight   # (3*C, C)
+        in_proj_bias = self.cross_attn.in_proj_bias       # (3*C,)
+        Wq, Wk, Wv = in_proj_weight.chunk(3, dim=0)
+        bq, bk, bv = in_proj_bias.chunk(3, dim=0)
+
+        Qp = F.linear(q, Wq, bq)    # (B, M, C)
+        Kp = F.linear(kv, Wk, bk)   # (B, N, C)
+        Vp = F.linear(kv, Wv, bv)   # (B, N, C)
+
+        # V-FiLM: instruction-conditioned modulation of the value content
+        # itself (which feature dimensions matter), independent of Q/K's
+        # attention-weight conditioning. Applied pre-head-split so
+        # gamma_v/beta_v (B, C) broadcast over the full N sequence in one
+        # shot, matching Qp/Kp/Vp's shape convention.
+        gamma_v = 1.0 + self.gamma_v_proj(etext)   # (B, C)
+        beta_v = self.beta_v_proj(etext)            # (B, C)
+        Vp = gamma_v.unsqueeze(1) * Vp + beta_v.unsqueeze(1)   # (B, N, C)
+
+        if os.environ.get("ICTC_DEBUG_ATTN"):
+            print(f"[DEBUG] gamma_v mean: {gamma_v[0].mean():.4f}, beta_v mean: {beta_v[0].mean():.4f}")
+
+        Qh = Qp.view(B, self._num_tokens, self._num_heads, head_dim).transpose(1, 2)  # (B,H,M,hd)
+        Kh = Kp.view(B, N, self._num_heads, head_dim).transpose(1, 2)                 # (B,H,N,hd)
+        Vh = Vp.view(B, N, self._num_heads, head_dim).transpose(1, 2)                 # (B,H,N,hd)
+
+        # Cosine attention: normalize Q and K (per head, last-dim=head_dim)
+        # so scores reflect directional alignment only, not |K|'s magnitude
+        # structure. V is left unnormalized — it still carries real feature
+        # content into the weighted sum. +1e-8 guards the zero-vector edge
+        # case before normalize (F.normalize's own eps=1e-12 already covers
+        # this, but the guard is added explicitly per spec for clarity).
+        Qh = F.normalize(Qh + 1e-8, dim=-1)
+        Kh = F.normalize(Kh, dim=-1)
+
+        tau = self.attn_temperature.clamp(min=1e-4)
+        scores = (Qh @ Kh.transpose(-2, -1)) / tau   # (B,H,M,N) — cosine sim / temperature
+
+        if os.environ.get("ICTC_DEBUG_ATTN"):
+            print(f"[DEBUG] Q norm after normalize: {Qh.norm(dim=-1).mean():.4f}")
+            print(f"[DEBUG] K norm after normalize: {Kh.norm(dim=-1).mean():.4f}")
+            print(f"[DEBUG] score std: {scores.std():.4f}, range: [{scores.min():.1f}, {scores.max():.1f}]")
+
+        # NaN guard: top_k must never exceed N (masking every position of a
+        # row to -inf would make softmax produce NaN). When top_k >= N,
+        # attending over all N positions IS standard full-softmax attention,
+        # so this fallback is exact, not an approximation.
+        effective_top_k = min(self.top_k, N)
+        if effective_top_k < N:
+            topk_idx = scores.topk(effective_top_k, dim=-1).indices        # (B,H,M,k)
+            mask = torch.full_like(scores, float("-inf"))
+            mask.scatter_(-1, topk_idx, 0.0)
+            scores = scores + mask                                        # -inf for non-top-K
+
+        attn_weights = F.softmax(scores, dim=-1)   # (B,H,M,N) — sparse when top_k < N
+        attn_weights = F.dropout(attn_weights, p=self.cross_attn.dropout, training=self.training)
+
+        out_h = attn_weights @ Vh                                    # (B,H,M,hd)
+        out = out_h.transpose(1, 2).reshape(B, self._num_tokens, self._embed_dim)  # (B,M,C)
+        out = F.linear(out, self.cross_attn.out_proj.weight, self.cross_attn.out_proj.bias)
+
+        # Average over heads to match the previous nn.MultiheadAttention
+        # contract (average_attn_weights=True default) — get_slice_attention()
+        # and tests/metrics depending on (B, M, D*K) shape are unaffected.
+        attn_weights_avg = attn_weights.mean(dim=1)   # (B, M, N) == (B, M, D*K)
 
         # Store weights detached (no grad accumulation in buffer)
-        self._last_attn_weights = attn_weights.detach()
+        self._last_attn_weights = attn_weights_avg.detach()
 
         return out
 

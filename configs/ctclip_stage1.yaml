@@ -13,6 +13,12 @@ num_heads: 8
 cond_dim: 2560
 use_film: true
 dropout: 0.0
+# Sparse top-K cross-attention (Diagnostic Test 3 fix): CT-CLIP features are
+# highly similar across spatial positions (raw pairwise cosine ~0.87), so
+# full softmax over all N=D*K=13,824 keys collapses to ~mean(V) regardless
+# of query, erasing FiLM's instruction-specific modulation before it can
+# matter (post-fix Test 3 rerun in DIAGNOSTIC_REPORT.md). min(128, N//4)=128.
+aggregator_top_k: 128
 
 # LLM — built and loaded (needed so Stage 2 can warm-start from this
 # checkpoint into the SAME architecture) but never invoked this stage: see

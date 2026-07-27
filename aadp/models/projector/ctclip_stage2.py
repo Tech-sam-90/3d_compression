@@ -51,6 +51,7 @@ class CTCLIPStage2Projector(nn.Module):
         dropout: float = 0.0,
         use_film: bool = True,
         max_depth: int = 24,
+        top_k: int = 128,
         device: Union[torch.device, str] = "cuda",
     ) -> None:
         super().__init__()
@@ -71,6 +72,7 @@ class CTCLIPStage2Projector(nn.Module):
             dropout=dropout,
             use_film=use_film,
             max_depth=max_depth,
+            top_k=top_k,
             device=device,
         )
 
@@ -82,6 +84,7 @@ class CTCLIPStage2Projector(nn.Module):
             dropout=dropout,
             use_film=use_film,
             max_depth=max_depth,
+            top_k=top_k,
             device=str(device),
         )
 

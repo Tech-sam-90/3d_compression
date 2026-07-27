@@ -135,9 +135,32 @@ def _warm_start_weights(path: str, model, device: str) -> None:
     """Weights-only load for a stage transition (e.g. Stage 1 → Stage 2):
     projector/visual_proj/cls_head/LoRA weights carry over, but optimizer
     and scheduler start fresh since Stage 2 trains a different set of
-    parameters at different LRs on a different schedule."""
+    parameters at different LRs on a different schedule.
+
+    strict=False + explicit key audit: attention-mechanism fixes added
+    InterSliceAggregator parameters (attn_temperature, gamma_v_proj,
+    beta_v_proj) that don't exist in checkpoints saved before those fixes.
+    These are expected-missing (correctly initialized fresh, per each
+    fix's own init scheme) — anything else missing is a real error.
+    """
     ckpt = torch.load(path, map_location=device)
-    model.projector.load_state_dict(ckpt["projector"])
+    result = model.projector.load_state_dict(ckpt["projector"], strict=False)
+    allowed_missing_suffixes = [
+        "attn_temperature",
+        "gamma_v_proj.weight", "gamma_v_proj.bias",
+        "beta_v_proj.weight", "beta_v_proj.bias",
+    ]
+    real_missing = [
+        k for k in result.missing_keys
+        if not any(k.endswith(s) for s in allowed_missing_suffixes)
+    ]
+    if real_missing:
+        raise RuntimeError(f"Unexpected missing keys in projector checkpoint: {real_missing}")
+    if result.unexpected_keys:
+        logger.warning("Unexpected keys in projector checkpoint (ignored): %s", result.unexpected_keys)
+    if result.missing_keys:
+        logger.info("Expected-missing projector keys (fresh init, new since checkpoint was saved): %s",
+                     result.missing_keys)
     model.visual_proj.load_state_dict(ckpt["visual_proj"])
     if model.cls_head is not None and "cls_head" in ckpt:
         model.cls_head.load_state_dict(ckpt["cls_head"])
@@ -303,6 +326,7 @@ def main() -> None:
         use_film=cfg.get("use_film", True),
         max_depth=cfg.get("max_depth", 24),
         dropout=cfg.get("dropout", 0.0),
+        top_k=cfg.get("aggregator_top_k", 128),
         llm_model_name=cfg.get("llm_model_name", "facebook/opt-1.3b"),
         llm_frozen=cfg.get("llm_frozen", False),
         llm_lora=cfg.get("llm_lora"),
