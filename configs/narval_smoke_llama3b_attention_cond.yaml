@@ -1,4 +1,4 @@
-experiment_name: narval_smoke_llama3b_biomedbert
+experiment_name: narval_smoke_llama3b_attention_cond
 projector: ctclip_stage2
 
 ctclip_dim: 512
@@ -10,10 +10,19 @@ num_tokens: 64
 num_heads: 8
 # See configs/ctclip_stage2_llama3b.yaml — cond_dim must equal
 # instruction_encoder_model's hidden_size exactly (no projection layer).
-# BiomedBERT (not Llama) is the instruction encoder now — 768, not 3072.
-cond_dim: 768
-use_film: true
+cond_dim: 3072
 dropout: 0.0
+
+# Attention-conditioned ablation (replaces FiLM entirely with a second
+# cross-attention operation over the instruction embedding — see
+# aadp/ablations/attention_conditioned_ctclip_stage2.py). Only difference
+# from configs/narval_smoke_llama3b.yaml — everything else identical for a
+# controlled FiLM-vs-attention comparison at the Llama-3.2-3B-Instruct scale
+# (mirrors the BioMedLM FiLM-vs-attention comparison earlier this session,
+# which came out essentially tied at n=1000: FiLM slightly ahead on
+# BLEU-4/ROUGE-L/CIDEr/RadGraph-XL F1, attention-cond ahead on METEOR,
+# RaTEScore/Avg-NLP a wash).
+aggregator_conditioning: attention
 
 llm_model_name: meta-llama/Llama-3.2-3B-Instruct
 llm_frozen: false
@@ -23,32 +32,21 @@ llm_lora:
   alpha: 32
   target_modules: ["q_proj", "v_proj"]
   dropout: 0.05
-# Small frozen instruction encoder (110M) instead of a second Llama-3.2-3B
-# load — see configs/ctclip_stage2_llama3b.yaml for the full rationale.
-instruction_encoder_model: microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract
+instruction_encoder_model: meta-llama/Llama-3.2-3B-Instruct
 
 device: cuda
 mixed_precision: true
 max_length: 1024
 num_epochs: 1
 batch_size: 2
-# gradient_accumulation_steps dropped from the parent's 16 to 1: with only
-# 20 samples / batch_size=2 = 10 batches, grad_accum=16 would never
-# complete one accumulation window, so zero optimizer steps would ever
-# fire — same issue hit and fixed for smoke_test_biomedlm.sh.
 gradient_accumulation_steps: 1
 max_grad_norm: 1.0
 learning_rate: 2.0e-5
 weight_decay: 0.0
-# warmup_ratio auto-scales to this run's tiny step count (see
-# scripts/train_ctclip.py's scheduler setup) — no manual warmup_steps
-# override needed.
 warmup_ratio: 0.05
 val_every_n_steps: 5
 save_every_n_steps: 10
-# New directory so smoke_checkpoints_llama3b_v2 (Llama+FiLM, prior smoke
-# test) is preserved.
-checkpoint_dir: /scratch/sadeniji/smoke_checkpoints_llama3b_biomedbert
+checkpoint_dir: /scratch/sadeniji/smoke_checkpoints_llama3b_attention_cond
 patience: 99
 use_wandb: false
 use_attn_loss: false

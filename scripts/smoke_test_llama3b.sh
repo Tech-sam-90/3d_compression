@@ -9,7 +9,7 @@
 #SBATCH --error=/scratch/sadeniji/logs/smoke_llama3b_%j.err
 
 mkdir -p /scratch/sadeniji/logs
-mkdir -p /scratch/sadeniji/smoke_checkpoints_llama3b
+mkdir -p /scratch/sadeniji/smoke_checkpoints_llama3b_biomedbert
 
 module load gcc arrow/25.0.0
 source ~/envs/ictc/bin/activate

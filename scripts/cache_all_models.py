@@ -17,7 +17,9 @@ hf_hub_download / nltk.download / hardcoded model-name strings):
     most of tests/), facebook/opt-1.3b (hardcoded default in
     aadp/models/ctclip_vlm.py, aadp/training/factory.py,
     scripts/train_ctclip.py), StanfordAIMI/RadBERT (bert_score fallback
-    backend in aadp/evaluation/metrics/ratescore.py).
+    backend in aadp/evaluation/metrics/ratescore.py),
+    microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract (small frozen
+    instruction encoder option, avoids double-loading a 3B model).
   - NLTK data: punkt, punkt_tab, wordnet, omw-1.4 (BLEU/METEOR scoring in
     scripts/vtcb_sweep_ctclip.py, notebooks/colab_smoke_test.py).
   - Evaluation-metric model downloads (radgraph, ratescore, bert_score) —
@@ -55,6 +57,9 @@ HF_MODELS = [
      "hardcoded default in aadp/models/ctclip_vlm.py, aadp/training/factory.py, scripts/train_ctclip.py"),
     ("StanfordAIMI/RadBERT", "encoder",
      "bert_score fallback backend in aadp/evaluation/metrics/ratescore.py"),
+    ("microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract", "encoder",
+     "small frozen instruction encoder, avoids double-loading a 3B model "
+     "as both LLM and instruction encoder — configs/ctclip_stage2_llama3b*.yaml"),
 ]
 
 NLTK_PACKAGES = ["punkt", "punkt_tab", "wordnet", "omw-1.4"]

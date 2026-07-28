@@ -921,3 +921,123 @@ B regression — specifically check whether generated reports have become
 instruction-specific, not just the aggregate NLP metrics.
 
 ---
+
+## Test 3 Full Rerun — checkpoint_best.pt — post 3-epoch training
+
+**Checkpoint:** attention-conditioned ablation (`aadp/ablations/attention_conditioned_ctclip_stage2.py`,
+`configs/ctclip_stage2_attention_cond.yaml`), `/scratch/sadeniji/ictc_checkpoints_stage2_attention_cond/checkpoint_best.pt`,
+step=3000, epoch=2 (3rd epoch), val_loss=0.8795 — i.e. after the *full*
+3-epoch training run (job 66489161), not a static/pre-training snapshot
+like earlier Test 3 reruns this session. Real text generation through the
+full BioMedLM LLM on real validation scans (GPU), not synthetic random
+features on CPU. Script: `scripts/diagnostics/test3_full_rerun_attncond.py`,
+job 66526239, wall time 2m57s, read-only diagnostic (no code modified).
+
+Note: the task that requested this rerun initially pointed at
+`/scratch/sadeniji/ictc_checkpoints_stage2_final/checkpoint_best.pt`
+(step=3500, val_loss=0.9466) — that is actually the **FiLM** checkpoint,
+not the attention-conditioned one. Flagged and corrected before running;
+this rerun used the actual attention-conditioned checkpoint above.
+
+### Part A: Instruction sensitivity
+
+Same scan (`valid_1_a_1`, index 0), 5 structurally different instructions.
+
+M-token cosine sim (pooled over M=64, `InterSliceAggregator`/
+`AttentionConditionedInterSliceAggregator` output, before `visual_proj`):
+
+```
+mean=0.839014  min=0.693724  max=0.986533
+```
+
+History: pre-fix (FiLM, before any attention fixes) = 0.99999988. Cosine-attention-only fix (still FiLM) = 0.992790. This attention-conditioned, fully-trained checkpoint = **0.839** — by far the largest instruction-sensitivity improvement of any fix or ablation attempted this session.
+
+Generated reports (greedy, `max_new_tokens=200`):
+
+1. *"Generate a radiology report for this CT scan."*
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Mediastinal structures could not be evaluated optimally because contrast material is unavailable. As far as can be observed: Heart contour size is normal. Pericardial effusion-thickening was not detected. Thoracic esophagus calibration was normal and no significant tumoral wall thickening was detected. No enlarged lymph nodes were detected at prevascular, pre-paratracheal, subcarinal or bilateral hilar pathological dimensions. When examined in the lung parenchyma window; Aeration of both lungs is natural. There are millimetric nonspecific nodules scattered throughout both lungs (the largest one measuring 5 mm). Pleural effusion - pneumothorax? Upper abdominal organs included in the sections are normal. Bilateral adrenal glands were normal and there is a space occupying lesion with an irregular border that measures 3 cm on its anterior surface located between the upper pole of the left kidney and the lower pole of spleen. It may represent a
+
+2. *"Describe any pulmonary findings in this chest CT."*
+   > No mass or infiltrative lesion was detected in both lungs. No pleural effusion, pneumothorax is observed at the time of examination. There are nonspecific findings compatible with sequelae changes on both lung parenchyma and pleura. Sequelae changes? Pneumonia sequela?. Pleural thickenings not measured. Mediastinal structures cannot be evaluated optimally because contrast material is not given. As far as can be seen: Heart contour size is normal. The widths of the mediastinal main vascular structures are normal. No enlarged lymph nodes were detected in prevascular, pre-paratracheal, subcarinal or bilateral hilar pathological dimensions. When examined in the lung parenchyma window; no active infiltration area was detected within it. Upper abdominal organs included in the sections are normal without space-occupying lesions. No lytic/destructive bone lesions were detected. Findings consistent with sequelae change on both pulmonary parenchyma and left hemithorax pleurapneumothorax. Sequelses changes, pneumonia sequela. Left hemithoracic
+
+3. *"Are there any cardiovascular abnormalities visible?"*
+   > No cardiovascular abnormalities were detected. No pleural effusion was observed in both hemithoraxes, and no pericardial thickening or effusion was detected. There is a mild degenerative change at the end of the vertebral corpus bone structure on the left side (degenerative changes). Mild degenerative changes are present within the vertebral body structures adjacent to it? Degeneration-related osteophyte formation may be considered as an alternative diagnosis for this finding. Vertebral compression fracture? Bone marrow edema? Diffuse infiltration? Metastatic disease? In addition, there is diffuse hypointense signal intensity throughout the liver parenchyma with no focal lesion compatible with hepatomegaly, splenomegaly, ascites. Hepatosplenomegaly. Bilateral adrenal glands normal size without any space occupying lesions. No lytic/destructive lesions in bone structures. Mild degenerative findings consistent with degenerative changes in vertebral bodies adjacent to them; Depressive changes in the endplate structures of the vertebrae adjacent to these areas. Hypoechoic nodular appearance in the upper part of the right kidney
+
+4. *"Summarize mediastinal structures and lymph nodes."*
+   > Mediastinal main vascular structures, heart contour and size are normal. Thoracic aorta diameter is normal. Pericardial effusion-thickening was not observed. No enlarged lymph nodes in prevascular, pre-paratracheal, subcarinal or bilateral hilar-axillary pathological dimensions were detected. When examined in the lung parenchyma window; Aeration of both lungs is natural and no nodular lesion is detected in the parenchymal tissue. Pleural thickening-effusion was not detected. Upper abdominal organs included in the sections are normal as far as can be seen within the borders of noncontrast CT examination. Bilateral adrenal glands were normal and no space-occupying lesion was detected. Bone structures in the study area are natural. Vertebral corpus heights are preserved. Mediastinally located lymph node with short axis less than 1 cm. Lymphadenopathy? Mild pleural effusion - minimal atelectasis. Minimal nonspecific changes in bone structure (osteopenia). Millimetric nodule
+
+5. *"Report any musculoskeletal or pleural findings."*
+   > No pleural effusion was detected. No lytic-destructive lesion was observed in the bone structures within the sections. A few millimetric nonspecific nodules were observed at both lung bases, and no mass with distinguishable borders is present. Pleural effusion not detectable on CT examination. Nonspecific findings compatible with pneumonia or viral infection in lungs. Millimetrical nonspecific nodular lesions in both lungs? Pneumonia, viral infection (unknown). ? Bone structure evaluation limited to sections passing through the upper part of the abdomen; no lytic-destructive lesion identified.. ? Viral infection (not confirmed by laboratory tests). ? Mild degenerative changes in vertebral corpus corners. ! Degenerative changes in intervertebral disc spaces. 。 ? ? . \... ? Not evaluated because it does not include contrast material. ? Possible infectious process involving both lungs. | ? Infectious processes affecting other organs cannot be excluded completely due to lack of clinical information about previous infections
+
+Genuinely distinct clinical content per instruction (kidney/spleen lesion vs. pneumonia sequelae vs. vertebral/hepatic findings vs. lymphadenopathy vs. degenerative/infectious findings) — not template repetition with word swaps.
+
+### Part B: Scan sensitivity (PRIMARY TEST)
+
+Fixed instruction *"Generate a radiology report for this CT scan."*, 10 scans at indices [0, 300, 600, 900, 1200, 1500, 1800, 2100, 2400, 2700] (`valid_1_a_1`, `valid_131_a_1`, `valid_258_a_2`, `valid_382_c_2`, `valid_500_d_1`, `valid_634_a_1`, `valid_766_a_1`, `valid_890_a_2`, `valid_1016_b_2`, `valid_1147_b_2`).
+
+M-token cosine sim (pooled over M=64):
+
+```
+mean=0.993325  min=0.977700  max=0.999217
+```
+
+Target was "meaningfully < 0.90" — this is far above that, essentially collapsed at the token-representation level.
+
+**Collapse rate: 13.3% (6/45 pairs near-or-exact-duplicate) → 10-30% band: partial collapse**
+- Exact duplicate pairs (4/45): (2,9), (3,6), (3,10), (6,10)
+- Near-duplicate pairs, edit_dist<0.05 (6/45, superset of exact): (2,7), (2,9), (3,6), (3,10), (6,10), (7,9)
+- Vocabulary diversity: 198 unique words / 1679 total words across the 10 reports, TTR=0.1179
+
+Edit distance matrix (normalized Levenshtein, 0=identical / 1=completely different):
+
+```
+        1      2      3      4      5      6      7      8      9     10
+ 1   0.000  0.538  0.541  0.575  0.545  0.541  0.517  0.247  0.538  0.541
+ 2   0.538  0.000  0.094  0.350  0.104  0.094  0.045  0.469  0.000  0.094
+ 3   0.541  0.094  0.000  0.338  0.162  0.000  0.110  0.538  0.094  0.000
+ 4   0.575  0.350  0.338  0.000  0.334  0.338  0.339  0.592  0.350  0.338
+ 5   0.545  0.104  0.162  0.334  0.000  0.162  0.111  0.392  0.104  0.162
+ 6   0.541  0.094  0.000  0.338  0.162  0.000  0.110  0.538  0.094  0.000
+ 7   0.517  0.045  0.110  0.339  0.111  0.110  0.000  0.464  0.045  0.110
+ 8   0.247  0.469  0.538  0.592  0.392  0.538  0.464  0.000  0.469  0.538
+ 9   0.538  0.000  0.094  0.350  0.104  0.094  0.045  0.469  0.000  0.094
+10   0.541  0.094  0.000  0.338  0.162  0.000  0.110  0.538  0.094  0.000
+```
+
+Reports #2, #3, #6, #9, #10 form a near-identical cluster (edit distances 0.00-0.10 between most pairs within the cluster). Reports #1, #4, #5, #7, #8 are meaningfully more distinct from each other and from that cluster (edit distances mostly 0.25-0.59).
+
+Generated reports (greedy, `max_new_tokens=200`), numbered to match the matrix above:
+
+1. `valid_1_a_1` (idx=0):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Mediastinal structures could not be evaluated optimally because contrast material is unavailable. As far as can be observed: Heart contour size is normal. Pericardial effusion-thickening was not detected. Thoracic esophagus calibration was normal and no significant tumoral wall thickening was detected. No enlarged lymph nodes were detected at prevascular, pre-paratracheal, subcarinal or bilateral hilar pathological dimensions. When examined in the lung parenchyma window; Aeration of both lungs is natural. There are millimetric nonspecific nodules scattered throughout both lungs (the largest one measuring 5 mm). Pleural effusion - pneumothorax? Upper abdominal organs included in the sections are normal. Bilateral adrenal glands were normal and there is a space occupying lesion with an irregular border that measures 3 cm on its anterior surface located between the upper pole of the left kidney and the lower pole of spleen. It may represent a
+
+2. `valid_131_a_1` (idx=300):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at the level of its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5 x 4mm. When examined in the lung parenchyma window; A few millimetric nonspecific nodules are seen in both lungs. Pleural effusions-thickening were not detected. Upper abdominal organs included in the sections have a natural appearance. Bilateral adrenal glands appear natural. No space-occupying lesion was detected within the liver that entered the cross-sectional area. Bilateral renal parenchymal thicknesses are preserved. Bone structures in the study area are natural. Vertebral
+
+3. `valid_258_a_2` (idx=600):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at the level of its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5 x 4mm. When examined in the lung parenchyma window; A few millimetric nonspecific nodules are seen in both lungs. Pleural effusions-thickening were not detected. Upper abdominal organs included in the sections have a natural appearance. Bilateral adrenal glands appear natural. No space-occupying lesion was detected as far as it can be evaluated within the borders of noncontrast CT. Bone structures in the study area are natural. Vertebral corpus heights are
+
+4. `valid_382_c_2` (idx=900):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5 x 4mm. In addition to these findings, there are several nonspecific millimetric nodules scattered throughout both lungs that do not reach any pathological dimensions according to CT examination performed during the pandemic period. When examined within the lung parenchyma window; A few ground glass densities are seen in the lower lobes of both lungs. Pleural effusions-thickenings cannot be evaluated because contrast material is not given. Upper abdominal organs included in the sections have been analyzed as naturally occurring. Bilateral
+
+5. `valid_500_d_1` (idx=1200):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at the level of its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5 x 4mm. When examined in the lung parenchyma window; A few millimetric nonspecific nodules are seen scattered throughout both lungs. Pleural effusions-thickening were not detected. Upper abdominal organs included in the sections have a natural appearance. No space-occupying lesion was detected within the liver that entered the cross-sectional area. Bilateral adrenal glands appeared normal and there was no space occupying lesion. Bone structures in the study area are natural. Ver
+
+6. `valid_634_a_1` (idx=1500):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at the level of its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5 x 4mm. When examined in the lung parenchyma window; A few millimetric nonspecific nodules are seen in both lungs. Pleural effusions-thickening were not detected. Upper abdominal organs included in the sections have a natural appearance. Bilateral adrenal glands appear natural. No space-occupying lesion was detected as far as it can be evaluated within the borders of noncontrast CT. Bone structures in the study area are natural. Vertebral corpus heights are
+
+7. `valid_766_a_1` (idx=1800):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5x4mm. When examined in the lung parenchyma window; A few millimetric nonspecific nodules are seen scattered throughout both lungs. Pleural effusions-thickening were not detected. Upper abdominal organs included in the sections have a natural appearance. Bilateral adrenal glands appear natural. No space-occupying lesion was detected within the liver that entered the cross-sectional area. Bilateral renal parenchymal thicknesses are preserved. Bone structures in the study area are natural. Vertebral corpus heights
+
+8. `valid_890_a_2` (idx=2100):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Mediastinal structures could not be evaluated optimally because contrast material is unavailable. As far as can be observed: Heart contour size is normal. Pericardial effusion-thickening was not detected. Thoracic esophagus calibration was normal and no significant tumoral wall thickening was detected. No enlarged lymph nodes were detected at prevascular, pre-paratracheal, subcarinal or bilateral hilar pathological dimensions. When examined in the lung parenchyma window; Aeration of both lungs is natural. There are millimetric nonspecific nodules with a diameter less than 5 mm on the right lower lobe posterobasal segment (not seen previously). Upper abdominal organs included in the sections have a natural appearance. No space-occupying lesion was detected within the liver that entered the cross-sectional area. Bilateral adrenal glands were normal and there was no space occupying lesion. Bone structures in the study area are natural
+
+9. `valid_1016_b_2` (idx=2400):
+   > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at the level of its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5 x 4mm. When examined in the lung parenchyma window; A few millimetric nonspecific nodules are seen in both lungs. Pleural effusions-thickening were not detected. Upper abdominal organs included in the sections have a natural appearance. Bilateral adrenal glands appear natural. No space-occupying lesion was detected within the liver that entered the cross-sectional area. Bilateral renal parenchymal thicknesses are preserved. Bone structures in the study area are natural. Vertebral
+
+10. `valid_1147_b_2` (idx=2700):
+    > Trachea and both main bronchi are open. No occlusive pathology was detected in the trachea and both major bronchi. Calibration of mediastinal vascular structures is natural. Heart contour size has increased slightly, but no pericardial effusion or thickening was observed. Thoracic esophagus calibration was normal and no significant tumoral wall thickness increase was detected at the level of its distal end. There were lymph nodes with a short axis diameter less than 1 cm located around the aorta and pulmonary artery hilum on the right side (the largest one measuring 7 mm). The smallest lymph node measured 5 x 4mm. When examined in the lung parenchyma window; A few millimetric nonspecific nodules are seen in both lungs. Pleural effusions-thickening were not detected. Upper abdominal organs included in the sections have a natural appearance. Bilateral adrenal glands appear natural. No space-occupying lesion was detected as far as it can be evaluated within the borders of noncontrast CT. Bone structures in the study area are natural. Vertebral corpus heights are
+
+### Verdict
+
+The attention-conditioning fix (replacing FiLM entirely with a second cross-attention operation over the instruction embedding) decisively solved the *instruction*-collapse problem this whole session has been chasing: Part A cosine dropped from FiLM's best-ever 0.9928 down to **0.839**, with the 5 generated reports containing genuinely distinct clinical content per instruction rather than boilerplate with word substitutions. However, Part B — scan sensitivity under a *fixed* instruction — shows the aggregator still hasn't fully solved the separately-diagnosed CT-CLIP feature-homogeneity problem (raw pairwise feature cosine ~0.87 across different scans, independent of any conditioning mechanism): M-token cosine sim is 0.993 (far above the <0.90 target) and the text-level collapse rate is **13.3%**, landing in the "partial collapse" band. The dominant failure mode is not uniform collapse across all scans — it's a *cluster* of about half the sampled scans (5 of 10: `valid_131_a_1`, `valid_258_a_2`, `valid_634_a_1`, `valid_1016_b_2`, `valid_1147_b_2`) whose reports converge to near-identical text (edit distances 0.00-0.10 within the cluster), while the other half remain meaningfully distinct. This suggests the top-K sparse + cosine visual cross-attention — unchanged from the FiLM pipeline in this ablation — is still the bottleneck for scan differentiation specifically, even though attention-based query conditioning fixed instruction differentiation. A next step worth considering: check whether the CT-CLIP features for the 5 collapsed scans are unusually close to each other in raw feature space (a data-side explanation) versus whether it's specifically an aggregator-side failure that a value-conditioning mechanism (V-FiLM's original motivation) could still help with even under attention-based query conditioning.

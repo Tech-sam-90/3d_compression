@@ -1,0 +1,87 @@
+experiment_name: ctclip_stage2_llama3b_attention_cond
+projector: ctclip_stage2
+
+# CT-CLIP feature dimensions (fixed — do not change)
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+# Stage 2 architecture
+embed_dim: 512
+num_tokens: 64          # M — default VTCB budget; override with --set for sweep
+num_heads: 8
+# cond_dim is the INSTRUCTION ENCODER's hidden_size, not the main LLM's —
+# aadp/models/ctclip_vlm.py asserts cond_dim == instruction_encoder.output_dim
+# with no projection layer in between. instruction_encoder_model below must
+# match Llama-3.2-3B-Instruct (hidden_size=3072) for the same reason as
+# configs/ctclip_stage2_llama3b.yaml.
+cond_dim: 3072
+dropout: 0.0
+
+# Attention-conditioned ablation (replaces FiLM entirely with a second
+# cross-attention operation over the instruction embedding — see
+# aadp/ablations/attention_conditioned_ctclip_stage2.py). This is the ONLY
+# substantive difference from configs/ctclip_stage2_llama3b.yaml — same
+# LLM, same LRs, same batch size, same data — for a controlled comparison
+# of conditioning mechanism at the Llama-3.2-3B-Instruct scale, mirroring
+# the BioMedLM FiLM-vs-attention comparison earlier this session (which
+# came out essentially tied at n=1000 samples: FiLM slightly ahead on
+# BLEU-4/ROUGE-L/CIDEr/RadGraph-XL F1, attention-cond ahead on METEOR,
+# RaTEScore/Avg-NLP a wash).
+aggregator_conditioning: attention
+
+# LLM — Llama-3.2-3B-Instruct (hidden_size=3072), matching Argus's
+# architecture family, to compare against the BioMedLM (GPT-2, 2560) run.
+llm_model_name: meta-llama/Llama-3.2-3B-Instruct
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  # Llama uses separate Q/K/V/O projections; find_lora_target_modules()
+  # auto-discovers the full set (q/k/v/o_proj + gate/up/down_proj) at
+  # runtime — this is only the fallback if auto-discovery finds nothing.
+  target_modules: ["q_proj", "v_proj"]
+  dropout: 0.05
+
+# Same model as llm_model_name — see the cond_dim comment above for why.
+instruction_encoder_model: meta-llama/Llama-3.2-3B-Instruct
+
+# Training — identical to configs/ctclip_stage2_llama3b.yaml
+device: cuda
+mixed_precision: true
+max_length: 1024
+num_epochs: 5
+batch_size: 2
+gradient_accumulation_steps: 16    # effective batch = 32
+max_grad_norm: 1.0
+learning_rate: 2.0e-5
+weight_decay: 0.0
+warmup_ratio: 0.05
+warmup_steps: 500
+val_every_n_steps: 500
+save_every_n_steps: 1000
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints_llama3b_attention_cond
+patience: 15
+use_wandb: false
+
+use_attn_loss: false
+
+# Tasks — T4 excluded (RadGenome unavailable)
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths — same CT-RATE features/labels as configs/ctclip_stage2.yaml
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+
+max_samples: null
+hf_token: null
+
+# VTCB sweep values (used by scripts/vtcb_sweep_ctclip.py)
+vtcb_budgets: [16, 32, 64, 128, 256, 512]
