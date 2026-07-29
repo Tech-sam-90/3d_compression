@@ -114,7 +114,10 @@ def generate(model, features_1: torch.Tensor, instruction: str, max_new_tokens: 
     -> llm.generate()) without modifying forward() itself. Greedy decoding
     (do_sample=False, num_beams=1) for reproducibility."""
     device = features_1.device
-    etext = model.instruction_encoder([instruction]).float()
+    # The whole model (including the aggregator's FiLM/attention-conditioning
+    # Linears) was cast to bfloat16 for inference — etext must match, not the
+    # float32 CTCLIPStage2VLM.forward() uses in its (fp32-only) training path.
+    etext = model.instruction_encoder([instruction]).to(model.llm.dtype)
     visual = model.projector(features_1, etext)
     visual = model.visual_proj(visual).to(model.llm.dtype)
 
