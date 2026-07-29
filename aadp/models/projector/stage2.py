@@ -100,17 +100,32 @@ class InterSliceAggregator(nn.Module):
         # themselves homogeneous (CT-CLIP raw feature cosine ~0.87) — a
         # ~25%-different weighted combination of very-similar vectors still
         # lands close in vector space regardless of attention weights.
-        # gamma_v_proj/beta_v_proj let the instruction directly modulate
-        # which feature dimensions of V are amplified/shifted, independent
-        # of which positions attention selects. Zero-initialized so
-        # gamma_v=1, beta_v=0 at start of training — identical to no V-FiLM
-        # until the model learns otherwise.
+        # gamma_v_proj lets the instruction directly modulate which feature
+        # dimensions of V are amplified/attenuated, independent of which
+        # positions attention selects. Zero-initialized so gamma_v=1 at
+        # start of training — identical to no V-FiLM until the model learns
+        # otherwise.
+        #
+        # Bounded, multiplicative-only V-FiLM (scripts/check_vfilm_scan_diversity.py,
+        # job 66661482): the original formula also had a beta_v_proj additive
+        # term, `Vp = gamma_v*Vp + beta_v`. beta_v is a pure function of the
+        # instruction (scan-agnostic), and the diagnostic showed it trained
+        # to ~46% of the combined term's norm — enough to dominate direction:
+        # V_after's pairwise cosine across 6 scans (3 collapsed-cluster, 3
+        # distinct) under a FIXED instruction was 0.999 for every pair type
+        # (collapsed-collapsed, distinct-distinct, cross-group), up from
+        # 0.955-0.963 before V-FiLM — i.e. V-FiLM was making scans MORE
+        # directionally alike, not less, erasing the one distinction the
+        # test was designed to detect. Removing beta_v_proj entirely and
+        # bounding gamma_v to [0.7, 1.3] via 0.3*tanh(...) keeps V-FiLM
+        # strictly multiplicative (can never fully overwrite V's direction
+        # with an instruction-only offset) and keeps its effect gentle
+        # (no more than a 30% per-dimension scale, vs. the old formula's
+        # unbounded gamma_v range of roughly [-2.69, 2.46] measured in
+        # check_vfilm.py CHECK 2).
         self.gamma_v_proj = nn.Linear(cond_dim, embed_dim)
-        self.beta_v_proj = nn.Linear(cond_dim, embed_dim)
         nn.init.zeros_(self.gamma_v_proj.weight)
-        nn.init.zeros_(self.gamma_v_proj.bias)   # gamma_v = 1.0 + 0 = 1.0 at init
-        nn.init.zeros_(self.beta_v_proj.weight)
-        nn.init.zeros_(self.beta_v_proj.bias)    # beta_v = 0 at init
+        nn.init.zeros_(self.gamma_v_proj.bias)   # gamma_v = 1.0 + 0.3*tanh(0) = 1.0 at init
 
         # Learnable depth queries: (M, C), shared across volumes in a batch
         self.depth_queries = nn.Parameter(torch.empty(num_tokens, embed_dim))
@@ -207,15 +222,17 @@ class InterSliceAggregator(nn.Module):
 
         # V-FiLM: instruction-conditioned modulation of the value content
         # itself (which feature dimensions matter), independent of Q/K's
-        # attention-weight conditioning. Applied pre-head-split so
-        # gamma_v/beta_v (B, C) broadcast over the full N sequence in one
-        # shot, matching Qp/Kp/Vp's shape convention.
-        gamma_v = 1.0 + self.gamma_v_proj(etext)   # (B, C)
-        beta_v = self.beta_v_proj(etext)            # (B, C)
-        Vp = gamma_v.unsqueeze(1) * Vp + beta_v.unsqueeze(1)   # (B, N, C)
+        # attention-weight conditioning. Applied pre-head-split so gamma_v
+        # (B, C) broadcasts over the full N sequence in one shot, matching
+        # Qp/Kp/Vp's shape convention. Bounded to [0.7, 1.3] and strictly
+        # multiplicative (no additive beta_v term) — see __init__'s comment
+        # for why the unbounded gamma+beta formula caused directional
+        # collapse across scans.
+        gamma_v = 1.0 + 0.3 * torch.tanh(self.gamma_v_proj(etext))   # (B, C), in [0.7, 1.3]
+        Vp = gamma_v.unsqueeze(1) * Vp   # (B, N, C)
 
         if os.environ.get("ICTC_DEBUG_ATTN"):
-            print(f"[DEBUG] gamma_v mean: {gamma_v[0].mean():.4f}, beta_v mean: {beta_v[0].mean():.4f}")
+            print(f"[DEBUG] gamma_v mean: {gamma_v[0].mean():.4f}")
 
         Qh = Qp.view(B, self._num_tokens, self._num_heads, head_dim).transpose(1, 2)  # (B,H,M,hd)
         Kh = Kp.view(B, N, self._num_heads, head_dim).transpose(1, 2)                 # (B,H,N,hd)

@@ -131,7 +131,9 @@ def _load_checkpoint(path: str, model, optimizer, scheduler, device: str):
     return ckpt["step"], ckpt["epoch"], ckpt.get("val_loss", float("inf"))
 
 
-def _warm_start_weights(path: str, model, device: str) -> None:
+def _warm_start_weights(
+    path: str, model, device: str, drop_keys: Optional[List[str]] = None
+) -> None:
     """Weights-only load for a stage transition (e.g. Stage 1 → Stage 2):
     projector/visual_proj/cls_head/LoRA weights carry over, but optimizer
     and scheduler start fresh since Stage 2 trains a different set of
@@ -151,9 +153,34 @@ def _warm_start_weights(path: str, model, device: str) -> None:
     genuinely new (expected-missing, fresh init) while the old checkpoint's
     film.*/gamma_v_proj.*/beta_v_proj.* keys become unexpected (already
     tolerated below — the attention-conditioned model has no FiLM at all).
+
+    Args:
+        drop_keys: Optional list of substrings. Any projector state_dict
+            key containing one of these is dropped from the checkpoint
+            before loading, so that parameter keeps its fresh __init__
+            value instead of the checkpoint's — it still shows up in
+            missing_keys below (already-allowed for gamma_v_proj/
+            beta_v_proj) rather than being silently overwritten. Used by
+            configs/ctclip_vfilm_fix.yaml (warm_start_drop_keys:
+            ["gamma_v_proj"]) so gamma_v_proj — trained under the old,
+            unbounded gamma+beta V-FiLM formula that
+            check_vfilm_scan_diversity.py showed collapses cross-scan
+            direction — restarts from its new zero-init under the bounded
+            tanh formula (aadp/models/projector/stage2.py) instead of
+            carrying over stale weights, while beta_v_proj (removed from
+            the architecture entirely) is already dropped automatically
+            via unexpected_keys below, and everything else (LoRA,
+            visual_proj, cross_attn, Q-FiLM, cosine attention temperature)
+            still warm-starts normally.
     """
     ckpt = torch.load(path, map_location=device)
-    result = model.projector.load_state_dict(ckpt["projector"], strict=False)
+    projector_state = ckpt["projector"]
+    if drop_keys:
+        projector_state = {
+            k: v for k, v in projector_state.items()
+            if not any(dk in k for dk in drop_keys)
+        }
+    result = model.projector.load_state_dict(projector_state, strict=False)
     allowed_missing_suffixes = [
         "attn_temperature",
         "gamma_v_proj.weight", "gamma_v_proj.bias",
@@ -354,7 +381,7 @@ def main() -> None:
     # ── Stage transition: warm-start weights from a prior stage's checkpoint ──
     resume_from = cfg.get("resume_from")
     if resume_from and Path(resume_from).exists():
-        _warm_start_weights(resume_from, model, device)
+        _warm_start_weights(resume_from, model, device, drop_keys=cfg.get("warm_start_drop_keys"))
 
     # ── Stage-specific LoRA freezing ────────────────────────────────────────────
     if stage == 1:

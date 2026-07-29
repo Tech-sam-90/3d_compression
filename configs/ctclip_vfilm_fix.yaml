@@ -1,0 +1,91 @@
+experiment_name: vfilm_fix_bounded_gamma
+projector: ctclip_stage2
+
+# CT-CLIP feature dimensions (fixed — do not change)
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+# Stage 2 architecture
+embed_dim: 512
+num_tokens: 64          # M — default VTCB budget; override with --set for sweep
+num_heads: 8
+# cond_dim is the INSTRUCTION ENCODER's hidden_size, not the main LLM's —
+# see configs/ctclip_stage2_llama3b_v2.yaml's comment for the full
+# reasoning (unchanged here — same double-Llama setup).
+cond_dim: 3072
+use_film: true
+dropout: 0.0
+
+# LLM — Llama-3.2-3B-Instruct (hidden_size=3072). Unchanged from
+# configs/ctclip_stage2_llama3b_v2.yaml.
+llm_model_name: meta-llama/Llama-3.2-3B-Instruct
+llm_frozen: false
+llm_lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  target_modules: ["q_proj", "v_proj"]
+  dropout: 0.05
+
+instruction_encoder_model: meta-llama/Llama-3.2-3B-Instruct
+
+# ── V-FiLM fix warm start ────────────────────────────────────────────────
+# Fixes the directional value-collapse diagnosed in
+# scripts/check_vfilm_scan_diversity.py (job 66661482: V_after cosine 0.999
+# across all scan pairs under a fixed instruction) — see
+# aadp/models/projector/stage2.py's V-FiLM comment for the architecture
+# change (beta_v_proj removed, gamma_v bounded to [0.7,1.3] via tanh).
+#
+# Warm-starts everything from the previous best checkpoint (job 66527771,
+# val_loss=0.4225) EXCEPT gamma_v_proj, which restarts from its fresh
+# zero-init under the new bounded formula rather than carrying over
+# weights trained under the old, now-removed unbounded gamma+beta formula.
+# beta_v_proj is dropped automatically (unexpected key — no longer exists
+# in the architecture at all). Optimizer/scheduler are NOT restored
+# (weights-only warm start, same as every other stage-transition config in
+# this project) — see scripts/train_ctclip.py's _warm_start_weights().
+resume_from: /scratch/sadeniji/ictc_checkpoints_llama3b_v2/checkpoint_best.pt
+warm_start_drop_keys: ["gamma_v_proj"]
+
+# Training
+device: cuda
+mixed_precision: true
+max_length: 1024
+num_epochs: 5
+# MEMORY: same double-Llama-in-fp32 setup as ctclip_stage2_llama3b_v2.yaml
+# (~12.8GB x2 = ~25.7GB static weights) — proven to fit and train cleanly
+# at batch_size=2, mem=80G (job 66527771).
+batch_size: 2
+gradient_accumulation_steps: 16    # effective batch = 32
+max_grad_norm: 1.0
+learning_rate: 2.0e-5
+weight_decay: 0.0
+warmup_ratio: 0.05
+warmup_steps: 500
+val_every_n_steps: 500
+save_every_n_steps: 1000
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints_vfilm_fix
+patience: 15
+use_wandb: false
+
+use_attn_loss: false
+
+# Tasks — T4 excluded (RadGenome unavailable)
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.6
+  T2: 0.3
+  T3: 0.1
+
+# Data paths — same CT-RATE features/labels as configs/ctclip_stage2.yaml
+features_train_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/train
+features_valid_dir: /project/def-uanazodo-ab/sadeniji/ctrate_features/valid
+ctrate_csv_train:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid:   /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+
+max_samples: null
+hf_token: null
+
+# VTCB sweep values (used by scripts/vtcb_sweep_ctclip.py)
+vtcb_budgets: [16, 32, 64, 128, 256, 512]
