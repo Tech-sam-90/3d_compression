@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 FEATURES_DIR = Path("/project/def-uanazodo-ab/sadeniji/ctrate_features/valid")
 CSV_PATH = "/project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv"
 CKPT_PATH = "/scratch/sadeniji/ictc_checkpoints_llama3b_v2/checkpoint_best.pt"
-CFG_PATH = "configs/ctclip_stage2_llama3b.yaml"
+CFG_PATH = "configs/ctclip_stage2_llama3b_v2.yaml"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 _CTCLIP_D, _CTCLIP_K, _CTCLIP_C = 24, 576, 512
