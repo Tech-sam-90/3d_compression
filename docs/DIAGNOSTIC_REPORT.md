@@ -1041,3 +1041,39 @@ Generated reports (greedy, `max_new_tokens=200`), numbered to match the matrix a
 ### Verdict
 
 The attention-conditioning fix (replacing FiLM entirely with a second cross-attention operation over the instruction embedding) decisively solved the *instruction*-collapse problem this whole session has been chasing: Part A cosine dropped from FiLM's best-ever 0.9928 down to **0.839**, with the 5 generated reports containing genuinely distinct clinical content per instruction rather than boilerplate with word substitutions. However, Part B — scan sensitivity under a *fixed* instruction — shows the aggregator still hasn't fully solved the separately-diagnosed CT-CLIP feature-homogeneity problem (raw pairwise feature cosine ~0.87 across different scans, independent of any conditioning mechanism): M-token cosine sim is 0.993 (far above the <0.90 target) and the text-level collapse rate is **13.3%**, landing in the "partial collapse" band. The dominant failure mode is not uniform collapse across all scans — it's a *cluster* of about half the sampled scans (5 of 10: `valid_131_a_1`, `valid_258_a_2`, `valid_634_a_1`, `valid_1016_b_2`, `valid_1147_b_2`) whose reports converge to near-identical text (edit distances 0.00-0.10 within the cluster), while the other half remain meaningfully distinct. This suggests the top-K sparse + cosine visual cross-attention — unchanged from the FiLM pipeline in this ablation — is still the bottleneck for scan differentiation specifically, even though attention-based query conditioning fixed instruction differentiation. A next step worth considering: check whether the CT-CLIP features for the 5 collapsed scans are unusually close to each other in raw feature space (a data-side explanation) versus whether it's specifically an aggregator-side failure that a value-conditioning mechanism (V-FiLM's original motivation) could still help with even under attention-based query conditioning.
+
+---
+
+## Full Session Summary — All 5 Checkpoints (Test 3 + n=3039 Evaluation)
+
+Consolidates every checkpoint trained this session, each run through the identical Test 3 protocol (`scripts/diagnostics/test3_full_rerun_*.py`) and full-validation-set evaluation (`scripts/evaluate_checkpoint.py`, `--max_samples 3039` for the Llama runs / `--max_samples 1000` for the BioMedLM runs — see individual eval logs for the exact matched-sample-count caveats already discussed above).
+
+| Checkpoint | val_loss | Part A cosine | Part B cosine | Collapse rate | BLEU-4 | METEOR | ROUGE-L | RaTEScore | RadGraph-XL F1 |
+|---|---|---|---|---|---|---|---|---|---|
+| BioMedLM + FiLM | 0.9466 | 0.9928 (static) | — | — | 0.1587 | 0.3195 | 0.3177 | 0.8124 | 0.1677 |
+| BioMedLM + attention-cond | 0.8795 | 0.8390 | 0.9933 | 13.3% | 0.1549 | 0.3315 | 0.3131 | 0.8133 | 0.1571 |
+| Llama + attention-cond | 0.4413 | 0.7079 | 0.8388 | 13.3% | 0.1292 | 0.2832 | 0.2905 | 0.8014 | 0.1440 |
+| Llama + FiLM (double-Llama instruction encoder) | 0.4225 | 0.6640 | 0.8937 | **6.7% (best)** | **0.1450** | **0.2994** | 0.2705 | **0.8034** | 0.1436 |
+| Llama + FiLM + BiomedBERT instruction encoder | **0.4201 (best)** | 0.5834 | 0.8776 | 13.3% | 0.1169 | 0.2778 | 0.2718 | 0.7945 | **0.1194 (worst)** |
+
+### Llama + FiLM + BiomedBERT (job 66580893 train, 66627985 Test 3, 66627986 eval)
+
+**Motivation:** the double-Llama setup (Llama-3.2-3B-Instruct loaded twice — once as the LLM, once as its own instruction encoder) was a flagged memory risk (~25.7GB static fp32 weights for the two loads alone) since the config was first written. `InstructionEncoder` (`aadp/data/instruction_encoder.py`) already supported swapping to any frozen HF encoder model with zero code changes — swapped `instruction_encoder_model` to `microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract` (110M params, `cond_dim: 3072→768`).
+
+**Training:** clean, zero NaN (one transient, non-fatal CUDA allocator OOM-retry warning, same as the double-Llama run — PyTorch recovered automatically). Best val_loss **0.4201** at step 4500 — the best of any checkpoint trained this session, edging out the double-Llama Llama+FiLM run's 0.4225.
+
+**Test 3 (job 66627985, checkpoint step=4500, val_loss=0.4201):**
+- Part A cosine: mean=0.5834 (best instruction-differentiation of the session — even better than double-Llama's 0.6640)
+- Part B cosine: mean=0.8776 (meets the <0.90 target, better than double-Llama's 0.8937)
+- **Collapse rate: 13.3%** (6/45 pairs) — worse than double-Llama's 6.7%, matching the attention-conditioned runs' rate instead. Two distinct 3-scan collapsed clusters: `(valid_1_a_1, valid_131_a_1, valid_1147_b_2)` and `(valid_258_a_2, valid_500_d_1, valid_634_a_1)`.
+- Part A reports for 5 different instructions on the same scan remain genuinely distinct in content (COVID-pattern findings vs. simple negative pulmonary finding vs. bare "No." for cardiovascular vs. lymph node summary vs. pleural finding) — instruction differentiation is not the issue here.
+
+**Full evaluation (job 66627986, n=3039):** worst of the three Llama variants on nearly every NLP/clinical metric — BLEU-4 0.1169, METEOR 0.2778, RaTEScore 0.7945, and notably **RadGraph-XL F1 0.1194**, well below both other Llama checkpoints (0.1436, 0.1440).
+
+### Verdict: best training loss ≠ best generation quality
+
+This is the clearest instance this session of training-loss and generation-quality diverging. The BiomedBERT swap achieves its stated engineering goal (avoids double-loading a 3B model, ~25GB memory saved) and even produces a marginally better val_loss and better Part A/B cosine — but its actual generated-report quality (especially RadGraph-XL F1, the most clinically-grounded metric available) is the worst of all three Llama configurations, and its Test 3 collapse rate reverts to the same 13.3% seen in both attention-conditioned runs rather than matching the double-Llama FiLM run's 6.7%.
+
+Working hypothesis: BiomedBERT is pretrained on PubMed-style scientific abstracts, not radiology-report or clinical-instruction-style text — it produces valid, frozen contextual embeddings, but Llama-3.2-3B-Instruct's own embedding space (used identically for both the LLM and, in the double-Llama setup, the instruction encoder) may carry richer signal specifically aligned with what the LLM itself finds useful for conditioning generation, even at 28x the parameter cost. A lower aggregator-training val_loss does not guarantee the *conditioning signal itself* is more useful to the downstream LLM — the two objectives (fitting the training distribution vs. producing a generation-quality-relevant instruction representation) are not the same thing.
+
+**Practical recommendation:** for memory-constrained settings, BiomedBERT is a reasonable and much cheaper choice with only a moderate quality cost. For best absolute generation quality (as measured here), the double-Llama Llama+FiLM configuration (job 66527771, `/scratch/sadeniji/ictc_checkpoints_llama3b_v2/checkpoint_best.pt`) remains the strongest checkpoint of the session on both collapse-avoidance and clinical-metric grounds.
