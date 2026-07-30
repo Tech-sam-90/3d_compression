@@ -94,12 +94,27 @@ ANATOMY_KEYWORDS = [
     "adrenal", "bone", "rib", "vertebra", "chest wall",
 ]
 
+# Terms too generic to produce a scan-varying T2 target — every CT-RATE
+# report mentions "lung"/"trachea"/etc. somewhere, so picking one of these
+# as the T2 entity makes sentences_containing() match nearly the same
+# boilerplate sentences regardless of scan content. Confirmed the concrete
+# failure mode this fixes: docs/QUALITATIVE_EVAL_V2.md's cross-scan T2
+# check (entity="lung" on all 5 scans) found 1/5 distinct outputs, mean
+# cosine 0.98 — "lung" alone doesn't disambiguate scans.
+GENERIC_ENTITIES = {
+    "lung", "lungs", "chest", "scan", "ct", "trachea",
+    "bronchi", "bronchus", "parenchyma", "examination",
+    "structure", "structures", "finding", "findings",
+}
+
 
 def extract_entities_from_report(report: str) -> List[str]:
-    """Return anatomy/finding terms that appear in ``report`` (keyword match)."""
+    """Return anatomy/finding terms that appear in ``report`` (keyword
+    match), excluding GENERIC_ENTITIES."""
     report_lower = report.lower()
     found = [kw for kw in ANATOMY_KEYWORDS if kw in report_lower]
-    return found if found else ["lung"]  # fallback so T2 is always constructible
+    found = [kw for kw in found if kw not in GENERIC_ENTITIES]
+    return found if found else ["lobe"]  # fallback so T2 is always constructible
 
 
 def sentences_containing(report: str, entity: str) -> str:

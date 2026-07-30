@@ -45,6 +45,27 @@ _CTCLIP_C = 512
 _CTCLIP_K = _CTCLIP_H * _CTCLIP_W  # 576 tokens per slice after flatten
 
 
+def _t3_positive_target(report: str, abn: str) -> str:
+    """Evidence-grounded T3 positive target: "Yes." plus the first sentence
+    of the report that actually mentions the abnormality, capped at one
+    sentence / 150 chars. Falls back to a bare "Yes." when abn's prettified
+    name (e.g. "lung nodule") doesn't appear verbatim in the report text —
+    sentences_containing() would otherwise silently fall back to the WHOLE
+    report, which is exactly the multi-sentence, unbounded target this
+    function exists to avoid."""
+    if abn.lower() not in report.lower():
+        return "Yes."
+    matched = sentences_containing(report, abn)
+    evidence = matched.split(". ", 1)[0].strip()
+    if not evidence.endswith("."):
+        evidence += "."
+    if len(evidence) > 150:
+        evidence = evidence[:150].rstrip()
+        if not evidence.endswith("."):
+            evidence += "."
+    return f"Yes. {evidence}"
+
+
 def build_instruction_for_task(
     task: str,
     report: str,
@@ -76,17 +97,25 @@ def build_instruction_for_task(
     if task == "T3":
         positives = [k for k, v in label_dict.items() if v == 1]
         negatives = [k for k, v in label_dict.items() if v == 0]
-        # Prefer a positive example when available, else negative, else T1 fallback
+        # Prefer a positive example when available, else negative, else T1 fallback.
+        # 70/30 (not 50/50) positive/negative: docs/QUALITATIVE_EVAL_V2.md found
+        # the model defaulted to "No." for 8/10 T3 questions regardless of the
+        # true label — oversampling positives gives more gradient signal against
+        # that bias. Positive targets are now evidence-grounded ("Yes. <sentence
+        # from the report>") for the same reason: a bare "Yes." gives the model
+        # nothing to learn to associate with the abnormality being present.
         if positives and negatives:
-            if random.random() < 0.5:
+            if random.random() < 0.7:
                 abn = _prettify_label(random.choice(positives))
-                return (f"Is there evidence of {abn} in this scan? Answer yes or no.", "Yes.")
+                return (f"Is there evidence of {abn} in this scan? Answer yes or no.",
+                        _t3_positive_target(report, abn))
             else:
                 abn = _prettify_label(random.choice(negatives))
                 return (f"Is there evidence of {abn} in this scan? Answer yes or no.", "No.")
         elif positives:
             abn = _prettify_label(random.choice(positives))
-            return (f"Is there evidence of {abn} in this scan? Answer yes or no.", "Yes.")
+            return (f"Is there evidence of {abn} in this scan? Answer yes or no.",
+                    _t3_positive_target(report, abn))
         elif negatives:
             abn = _prettify_label(random.choice(negatives))
             return (f"Is there evidence of {abn} in this scan? Answer yes or no.", "No.")
