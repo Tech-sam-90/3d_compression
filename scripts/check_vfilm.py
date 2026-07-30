@@ -95,13 +95,25 @@ def check2_gamma_range(state_dict: dict, cond_dim: int, seed: int = 0):
 
 def run_with_vfilm_capture(model, feat_1dkc: torch.Tensor, instruction: str):
     """Runs model.projector(features, etext) with hooks capturing the exact
-    kv/gamma_raw/beta tensors stage2.py's forward() computes internally,
-    then replicates its Vp/gamma_v/beta_v formula to recover V_before
+    kv/gamma_raw[/beta] tensors stage2.py's forward() computes internally,
+    then replicates its Vp/gamma_v[/beta_v] formula to recover V_before
     (pre-V-FiLM), V_after (post-V-FiLM) — each (B, N, C) — plus gamma_v and
     beta_v themselves (B, C), so callers needing the gamma/beta decomposition
     (e.g. scripts/check_vfilm_scan_diversity.py's beta-dominance check)
-    don't need a second, duplicate hook pass."""
+    don't need a second, duplicate hook pass.
+
+    Handles BOTH V-FiLM formulas, detected via hasattr(stage2, "beta_v_proj"):
+      - Old, unbounded (pre-fix checkpoints, e.g. ictc_checkpoints_llama3b_v2):
+        gamma_v = 1.0 + gamma_v_proj(etext); V_after = gamma_v*V_before + beta_v.
+        Returns beta_v as a real (B, C) tensor.
+      - New, bounded multiplicative-only (post-fix checkpoints, e.g.
+        ictc_checkpoints_vfilm_fix — see aadp/models/projector/stage2.py):
+        gamma_v = 1.0 + 0.3*tanh(gamma_v_proj(etext)); V_after = gamma_v*V_before.
+        beta_v_proj no longer exists at all, so this returns beta_v=None —
+        callers must treat that as "no additive term", not a missing value.
+    """
     stage2 = model.projector.stage2
+    has_beta = hasattr(stage2, "beta_v_proj")
     captured = {}
 
     def kv_hook(module, inp, out):
@@ -115,7 +127,7 @@ def run_with_vfilm_capture(model, feat_1dkc: torch.Tensor, instruction: str):
 
     h1 = stage2.norm_kv.register_forward_hook(kv_hook)
     h2 = stage2.gamma_v_proj.register_forward_hook(gamma_hook)
-    h3 = stage2.beta_v_proj.register_forward_hook(beta_hook)
+    h3 = stage2.beta_v_proj.register_forward_hook(beta_hook) if has_beta else None
 
     with torch.no_grad():
         etext = model.instruction_encoder([instruction]).float()
@@ -123,7 +135,8 @@ def run_with_vfilm_capture(model, feat_1dkc: torch.Tensor, instruction: str):
 
     h1.remove()
     h2.remove()
-    h3.remove()
+    if h3 is not None:
+        h3.remove()
 
     kv = captured["kv"]
     in_proj_weight = stage2.cross_attn.in_proj_weight
@@ -132,9 +145,14 @@ def run_with_vfilm_capture(model, feat_1dkc: torch.Tensor, instruction: str):
     _, _, bv = in_proj_bias.chunk(3, dim=0)
     V_before = F.linear(kv, Wv, bv)
 
-    gamma_v = 1.0 + captured["gamma_raw"]
-    beta_v = captured["beta"]
-    V_after = gamma_v.unsqueeze(1) * V_before + beta_v.unsqueeze(1)
+    if has_beta:
+        gamma_v = 1.0 + captured["gamma_raw"]
+        beta_v = captured["beta"]
+        V_after = gamma_v.unsqueeze(1) * V_before + beta_v.unsqueeze(1)
+    else:
+        gamma_v = 1.0 + 0.3 * torch.tanh(captured["gamma_raw"])
+        beta_v = None
+        V_after = gamma_v.unsqueeze(1) * V_before
 
     return V_before, V_after, gamma_v, beta_v
 

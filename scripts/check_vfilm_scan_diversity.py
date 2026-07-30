@@ -96,12 +96,20 @@ def main() -> None:
 
         # Beta dominance decomposition at full token resolution (N tokens),
         # matching how V_after itself is actually computed (broadcast add),
-        # not at the pooled/summarized level.
+        # not at the pooled/summarized level. beta_v is None when the
+        # checkpoint's architecture has no beta_v_proj at all (the bounded
+        # V-FiLM fix, aadp/models/projector/stage2.py) — that's not a
+        # missing value, it's a real "zero additive term" data point, so
+        # beta_norms is correctly 0.0 for every scan in that case rather
+        # than being skipped.
         N = V_before.shape[1]
         gamma_term = gamma_v.unsqueeze(1) * V_before                       # (B, N, C)
-        beta_term = beta_v.unsqueeze(1).expand(-1, N, -1)                  # (B, N, C)
         gamma_norms[stem] = torch.norm(gamma_term).item()
-        beta_norms[stem] = torch.norm(beta_term).item()
+        if beta_v is not None:
+            beta_term = beta_v.unsqueeze(1).expand(-1, N, -1)              # (B, N, C)
+            beta_norms[stem] = torch.norm(beta_term).item()
+        else:
+            beta_norms[stem] = 0.0
 
         print(f"  {stem:20s} done "
               f"(||gamma*V||={gamma_norms[stem]:.2f}, ||beta||={beta_norms[stem]:.2f})")
@@ -150,7 +158,11 @@ def main() -> None:
     print(f"  ||gamma × V||  = {mean_gamma_norm:.2f}")
     print(f"  ||beta||       = {mean_beta_norm:.2f}")
     print(f"  beta fraction  = {beta_fraction:.1f}%")
-    if beta_fraction > 50.0:
+    if mean_beta_norm == 0.0:
+        print("  -> [N/A: beta_v_proj removed entirely by the V-FiLM fix — "
+              "no additive term exists, so beta dominance is structurally "
+              "impossible rather than measured-and-low]")
+    elif beta_fraction > 50.0:
         print("  -> [BETA DOMINATES: V-FiLM ignores scan content]")
     else:
         print("  -> [BALANCED: both gamma and beta contribute]")
