@@ -1,0 +1,61 @@
+experiment_name: ctclip_e2e_stage2
+projector: ctclip_stage2
+
+ctclip_dim: 512
+max_depth: 24
+ctclip_tokens_per_slice: 576   # 24 * 24
+
+embed_dim: 512
+num_tokens: 64
+num_heads: 8
+cond_dim: 3072
+use_film: true
+dropout: 0.0
+
+# ── End-to-end ViT staging ───────────────────────────────────────────────
+# stage2: everything unfrozen (visual_encoder + llm + projector).
+# resume_from must point at stage1's CONSOLIDATED flat state dict (written by
+# scripts/train_ctclip.py's _train_e2e() via model_engine.save_16bit_model()
+# at end of stage1), not the raw ZeRO-3 sharded save_checkpoint() directory —
+# a sharded checkpoint isn't loadable via plain torch.load()+
+# load_state_dict(). visual_encoder is independently (re)loaded straight from
+# ctclip_checkpoint below at construction time regardless of stage (it never
+# changes during stage1 — frozen there — so there's nothing to warm-start for
+# it specifically; see aadp/models/ctclip_vlm.py's __init__).
+training_stage: stage2
+ctclip_checkpoint: /project/def-uanazodo-ab/sadeniji/hf_cache/hub/datasets--ibrahimhamamci--CT-RATE/snapshots/deeca4d89e9f978d4d1bccd88a55071ddbb146bb/models/CT-CLIP-Related/CT-CLIP_v2.pt
+resume_from: /scratch/sadeniji/ictc_checkpoints_e2e_stage1/checkpoint_latest_consolidated.pt
+
+llm_model_name: meta-llama/Llama-3.2-3B-Instruct
+llm_frozen: false
+instruction_encoder_model: meta-llama/Llama-3.2-3B-Instruct
+
+# Training — batch size / gradient accumulation are NOT read from here for
+# this path; DeepSpeed reads train_micro_batch_size_per_gpu/
+# gradient_accumulation_steps directly from deepspeed_config below.
+max_length: 1024
+num_epochs: 5
+vit_lr: 1.0e-5
+stage1_lr: 1.0e-4
+llm_lr: 2.0e-5
+weight_decay: 0.01
+val_every_n_steps: 500
+save_every_n_steps: 1000
+checkpoint_dir: /scratch/sadeniji/ictc_checkpoints_e2e_stage2
+deepspeed_config: configs/ds_zero3.json
+
+use_attn_loss: false
+
+tasks: ["T1", "T2", "T3"]
+task_weights:
+  T1: 0.5
+  T2: 0.35
+  T3: 0.15
+
+ct_volume_root: /scratch/sadeniji/ct_rate_raw
+ctrate_csv_train: /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/train_merged.csv
+ctrate_csv_valid: /project/def-uanazodo-ab/sadeniji/ctrate_csv/dataset/merged/valid_merged.csv
+target_shape: [240, 480, 480]
+
+max_samples: null
+hf_token: null
